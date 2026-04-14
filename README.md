@@ -90,16 +90,26 @@ tx.Sign(&outscript.BtcTxSign{
 })
 
 // P2TR (BIP-341 key-path, SIGHASH_DEFAULT). PrevScript is required —
-// BIP-341 sighashes commit to every input's scriptPubKey. Only
-// *secp256k1.PrivateKey is accepted as Key since BIP-340 Schnorr needs
-// access to the raw scalar for the taproot tweak. Tapscript/script-path
-// spends are not yet supported.
+// BIP-341 sighashes commit to every input's scriptPubKey. Tapscript /
+// script-path spends are not yet supported.
+//
+// Key can be either:
+//   - *secp256k1.PrivateKey: the library applies the BIP-341 tweak itself.
+//   - anything implementing TaprootSigner: TSS / MuSig2 / FROST / HSM /
+//     mock signers that already know their tweaked key. The library
+//     feeds them the 32-byte sighash and trusts them to return a 64-byte
+//     BIP-340 signature.
 tx.Sign(&outscript.BtcTxSign{
     Key:        privKey,
     Scheme:     "p2tr",
     Amount:     100000,
     PrevScript: prevScriptPubKey, // 0x5120 <32-byte x-only output key>
 })
+
+// Offline helpers for TSS integrations (compute the aggregate output key
+// and the sighash without invoking the signer):
+//   tweakedX, parity, _ := outscript.TaprootTweak(internalXOnly)
+//   digest, _          := tx.TaprootSighash(keys, inputIdx)
 
 // Serialize
 data, _ := tx.MarshalBinary()

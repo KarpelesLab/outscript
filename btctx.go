@@ -598,6 +598,10 @@ var (
 	prefillP2WSHP2PUK  = [][]byte{prefillEmptySig, prefillEmptyP2PUKScript}
 	prefillP2WSHP2PKH  = [][]byte{prefillEmptySig, prefillEmptyCompKey, prefillEmptyP2PKHScript}
 	prefillP2WSHP2PUKH = [][]byte{prefillEmptySig, prefillEmptyUncompKey, prefillEmptyP2PKHScript}
+
+	// P2TR key-path SIGHASH_DEFAULT witness is exactly one 64-byte Schnorr
+	// signature, so the prefill size is exact rather than an upper bound.
+	prefillP2TR = [][]byte{make([]byte, 64)}
 )
 
 // Prefill will fill the transaction input with empty data matching the expected signature length for the given scheme, if supported
@@ -631,6 +635,10 @@ func (in *BtcTxInput) Prefill(scheme string) error {
 	case "p2wsh:p2pukh":
 		in.Script = nil
 		in.Witnesses = prefillP2WSHP2PUKH
+		return nil
+	case "p2tr":
+		in.Script = nil
+		in.Witnesses = prefillP2TR
 		return nil
 	default:
 		return fmt.Errorf("unsupported sign scheme: %s", scheme)

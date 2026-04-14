@@ -6,29 +6,12 @@ import (
 	"github.com/KarpelesLab/secp256k1"
 )
 
-// Test-only exports for package-internal helpers.
+// Test-only exports.
 
 // BIP340SignForTest exposes bip340Sign without any BIP-341 taproot tweak so
-// that top-level BIP-340 vectors can be exercised.
+// that top-level BIP-340 vectors can be exercised directly.
 func BIP340SignForTest(priv *secp256k1.PrivateKey, msg, auxRand []byte) ([]byte, error) {
 	return bip340Sign(&priv.Key, msg, auxRand)
-}
-
-// TaprootTweakForTest exposes taprootTweakPubKey.
-func TaprootTweakForTest(internalXOnly []byte) (tweakedXOnly []byte, parity int, err error) {
-	out, par, _, err := taprootTweakPubKey(internalXOnly)
-	return out, par, err
-}
-
-// TaprootSighashForTest computes the BIP-341 SIGHASH_DEFAULT key-path sighash
-// for input idx of tx, given the full slice of signing keys (each with
-// PrevScript and Amount populated for its input).
-func TaprootSighashForTest(tx *BtcTx, keys []*BtcTxSign, idx int) ([]byte, error) {
-	parts, err := tx.taprootSighashParts(keys)
-	if err != nil {
-		return nil, err
-	}
-	return tx.taprootKeySpendSighash(idx, 0x00, parts)
 }
 
 // BIP340VerifyForTest verifies a 64-byte BIP-340 Schnorr signature over msg

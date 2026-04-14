@@ -82,6 +82,19 @@ func taprootTweakPubKey(internalXOnly []byte) (tweakedXOnly []byte, parity int, 
 	return out, par, tweak, nil
 }
 
+// TaprootTweak applies the BIP-341 key-path-only taproot tweak to a 32-byte
+// x-only internal public key (empty merkle root). It returns the 32-byte
+// tweaked x-only output key and the parity of the tweaked point (0 if the
+// resulting Q has an even Y coordinate, 1 if odd).
+//
+// TSS / MuSig / FROST callers use this to derive the aggregate output key
+// they need to commit to on-chain; signing itself is then done via a
+// [TaprootSigner] that already knows the tweak.
+func TaprootTweak(internalXOnly []byte) (tweakedXOnly []byte, parity int, err error) {
+	out, par, _, err := taprootTweakPubKey(internalXOnly)
+	return out, par, err
+}
+
 // ITaprootTweak is an [Insertable] that takes a 33-byte compressed secp256k1
 // pubkey and emits the 32-byte BIP-341 key-path-only tweaked x-only output key.
 type ITaprootTweak struct {
@@ -181,13 +194,26 @@ func bip340Sign(priv *secp256k1.ModNScalar, msg, auxRand []byte) ([]byte, error)
 	return sig, nil
 }
 
+// TaprootSigner is implemented by signers that can produce a 64-byte BIP-340
+// Schnorr signature directly over a 32-byte sighash digest. The signer is
+// responsible for applying the BIP-341 taproot tweak (and any y-parity
+// adjustments) to its key material before signing — the outscript package
+// does not attempt to tweak an opaque signer.
+//
+// This is the integration point for TSS / MuSig2 / FROST signers and for
+// hardware-backed or mock ("fake") signers that do not expose a raw private
+// scalar. Use [TaprootTweak] and [BtcTx.TaprootSighash] to compute the
+// tweaked output key and the sighash outside the library.
+type TaprootSigner interface {
+	SignTaproot(sighash []byte) ([]byte, error)
+}
+
 // taprootPrivKey returns the underlying secp256k1 private scalar of a
-// crypto.Signer. Only *secp256k1.PrivateKey is supported; other implementations
-// (e.g. hardware-backed signers) cannot expose the raw scalar and therefore
-// cannot do BIP-340 Schnorr signing through this package.
+// crypto.Signer. Callers that can't expose a raw scalar (TSS, HSM, etc.)
+// should implement [TaprootSigner] on their Key instead.
 func taprootPrivKey(signer crypto.Signer) (*secp256k1.PrivateKey, error) {
 	if pk, ok := signer.(*secp256k1.PrivateKey); ok {
 		return pk, nil
 	}
-	return nil, fmt.Errorf("p2tr signing requires *secp256k1.PrivateKey, got %T", signer)
+	return nil, fmt.Errorf("p2tr signing requires *secp256k1.PrivateKey or a TaprootSigner, got %T", signer)
 }

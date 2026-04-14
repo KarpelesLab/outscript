@@ -10,6 +10,20 @@ import (
 	"github.com/KarpelesLab/secp256k1"
 )
 
+// TaprootSighash computes the BIP-341 key-path SIGHASH_DEFAULT digest for
+// input idx. keys must line up 1:1 with tx.In; each key's PrevScript and
+// Amount must be set (BIP-341 commits to every input's scriptPubKey and
+// value, not only the one being signed). Intended for callers that sign
+// externally — e.g. TSS / MuSig / FROST — and feed the returned 32-byte
+// digest into their own BIP-340 Schnorr protocol.
+func (tx *BtcTx) TaprootSighash(keys []*BtcTxSign, idx int) ([]byte, error) {
+	parts, err := tx.taprootSighashParts(keys)
+	if err != nil {
+		return nil, err
+	}
+	return tx.taprootKeySpendSighash(idx, 0x00, parts)
+}
+
 // taprootSighashParts caches the per-transaction BIP-341 sighash components
 // (sha_prevouts, sha_amounts, sha_scriptpubkeys, sha_sequences, sha_outputs).
 // Each is a 32-byte SHA-256 digest over the concatenation of the
@@ -106,17 +120,35 @@ func (tx *BtcTx) taprootKeySpendSighash(n int, hashType byte, parts *taprootSigh
 // p2trSign signs input n with a BIP-341 key-path spend. Produces a 64-byte
 // Schnorr signature witness. SigHash 0 and 1 are both treated as
 // SIGHASH_DEFAULT (64-byte sig, no trailing hash-type byte).
+//
+// If k.Key implements [TaprootSigner], that path is used (TSS, HSM, mock
+// signer, etc.) and the signer is trusted to apply its own taproot tweak.
+// Otherwise k.Key must be a *secp256k1.PrivateKey so that the tweak can be
+// applied here.
 func (tx *BtcTx) p2trSign(n int, k *BtcTxSign, parts *taprootSighashParts) error {
 	if k.SigHash != 0 && k.SigHash != 1 {
 		return fmt.Errorf("taproot: SigHash 0x%x not supported (only SIGHASH_DEFAULT)", k.SigHash)
 	}
 
-	priv, err := taprootPrivKey(k.Key)
+	sigHash, err := tx.taprootKeySpendSighash(n, 0x00, parts)
 	if err != nil {
 		return err
 	}
 
-	sigHash, err := tx.taprootKeySpendSighash(n, 0x00, parts)
+	if ts, ok := k.Key.(TaprootSigner); ok {
+		sig, err := ts.SignTaproot(sigHash)
+		if err != nil {
+			return err
+		}
+		if len(sig) != 64 {
+			return fmt.Errorf("taproot: TaprootSigner returned %d-byte sig, want 64", len(sig))
+		}
+		tx.In[n].Witnesses = [][]byte{sig}
+		tx.In[n].Script = nil
+		return nil
+	}
+
+	priv, err := taprootPrivKey(k.Key)
 	if err != nil {
 		return err
 	}
