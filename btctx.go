@@ -74,9 +74,14 @@ type BtcTxOutput struct {
 type BtcTxSign struct {
 	Key     crypto.Signer
 	Options crypto.SignerOpts
-	Scheme  string    // "p2pk", "p2wpkh", "p2wsh:p2pkh", etc
-	Amount  BtcAmount // value of input, required for segwit transaction signing
+	Scheme  string    // "p2pk", "p2wpkh", "p2wsh:p2pkh", "p2tr", etc
+	Amount  BtcAmount // value of input, required for segwit and taproot signing
 	SigHash uint32
+	// PrevScript is the scriptPubKey of the output being spent by this
+	// input. Required when signing any input with the "p2tr" scheme: BIP-341
+	// sighashes commit to the scriptPubKey of every input. For non-taproot
+	// schemes it is ignored.
+	PrevScript []byte
 }
 
 // Sign will perform signature on the transaction
@@ -87,14 +92,15 @@ func (tx *BtcTx) Sign(keys ...*BtcTxSign) error {
 
 	wtx := tx.Dup() // work tx, used for signing/etc
 	var pfx, sfx []byte
+	var taprootParts *taprootSighashParts
 	var err error
 
 	for n, k := range keys {
-		if k.SigHash == 0 {
-			k.SigHash = 1 // default to SIGHASH_ALL
-		}
 		if k.Options == nil {
 			k.Options = crypto.SHA256
+		}
+		if k.Scheme != "p2tr" && k.SigHash == 0 {
+			k.SigHash = 1 // default to SIGHASH_ALL
 		}
 
 		switch k.Scheme {
@@ -164,6 +170,16 @@ func (tx *BtcTx) Sign(keys ...*BtcTxSign) error {
 
 			err := tx.p2wshSign(n, k, pfx, sfx)
 			if err != nil {
+				return err
+			}
+		case "p2tr":
+			if taprootParts == nil {
+				taprootParts, err = tx.taprootSighashParts(keys)
+				if err != nil {
+					return err
+				}
+			}
+			if err := tx.p2trSign(n, k, taprootParts); err != nil {
 				return err
 			}
 		default:

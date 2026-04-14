@@ -17,6 +17,8 @@ var (
 		"p2pk":   Format{IPushBytes{Lookup("pubkey:comp")}, Bytes{0xac}},
 		"p2puk":  Format{IPushBytes{Lookup("pubkey:uncomp")}, Bytes{0xac}},
 		"p2wpkh": Format{Bytes{0}, IPushBytes{IHash160(Lookup("pubkey:comp"))}},
+		// p2tr (BIP-341, key-path only): OP_1 <32-byte tweaked x-only output key>
+		"p2tr": Format{Bytes{0x51}, IPushBytes{ITaprootTweak{Lookup("pubkey:comp")}}},
 		// p2sh formats
 		"p2sh:p2pkh":  Format{Bytes{0xa9}, IPushBytes{IHash160(Lookup("p2pkh"))}, Bytes{0x87}},
 		"p2sh:p2pukh": Format{Bytes{0xa9}, IPushBytes{IHash160(Lookup("p2pukh"))}, Bytes{0x87}},
@@ -40,7 +42,7 @@ var (
 
 	// FormatsPerNetwork is a table listing the typically available formats for each network
 	FormatsPerNetwork = map[string][]string{
-		"bitcoin":      []string{"p2wpkh", "p2sh:p2wpkh", "p2puk", "p2pk", "p2pukh", "p2pkh"},
+		"bitcoin":      []string{"p2tr", "p2wpkh", "p2sh:p2wpkh", "p2puk", "p2pk", "p2pukh", "p2pkh"},
 		"bitcoin-cash": []string{"p2puk", "p2pk", "p2pukh", "p2pkh"},
 		"litecoin":     []string{"p2wpkh", "p2sh:p2wpkh", "p2puk", "p2pk", "p2pukh", "p2pkh"},
 		"dogecoin":     []string{"p2puk", "p2pk", "p2pukh", "p2pkh"},
