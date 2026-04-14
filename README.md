@@ -82,11 +82,23 @@ tx.In = append(tx.In, &outscript.BtcTxInput{
 // Add outputs
 tx.AddNetOutput("bitcoin", "bc1q...", 50000)
 
-// Sign (supports p2pkh, p2wpkh, p2sh:p2wpkh, p2wsh, etc.)
+// Sign (supports p2pkh, p2wpkh, p2sh:p2wpkh, p2wsh, p2tr, etc.)
 tx.Sign(&outscript.BtcTxSign{
     Key:    privKey,
     Scheme: "p2wpkh",
     Amount: 100000, // input value, required for segwit
+})
+
+// P2TR (BIP-341 key-path, SIGHASH_DEFAULT). PrevScript is required —
+// BIP-341 sighashes commit to every input's scriptPubKey. Only
+// *secp256k1.PrivateKey is accepted as Key since BIP-340 Schnorr needs
+// access to the raw scalar for the taproot tweak. Tapscript/script-path
+// spends are not yet supported.
+tx.Sign(&outscript.BtcTxSign{
+    Key:        privKey,
+    Scheme:     "p2tr",
+    Amount:     100000,
+    PrevScript: prevScriptPubKey, // 0x5120 <32-byte x-only output key>
 })
 
 // Serialize
