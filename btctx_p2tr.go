@@ -46,6 +46,28 @@ func (tx *BtcTx) taprootSighashParts(keys []*BtcTxSign) (*taprootSighashParts, e
 	if len(keys) != len(tx.In) {
 		return nil, errors.New("taproot: keys length does not match number of inputs")
 	}
+	prevScripts := make([][]byte, len(keys))
+	amounts := make([]BtcAmount, len(keys))
+	for i, k := range keys {
+		if len(k.PrevScript) == 0 {
+			return nil, fmt.Errorf("taproot: input %d missing PrevScript (required when any input uses p2tr)", i)
+		}
+		prevScripts[i] = k.PrevScript
+		amounts[i] = k.Amount
+	}
+	return tx.taprootSighashPartsRaw(prevScripts, amounts)
+}
+
+// taprootSighashPartsRaw is the keyless variant used both by signers and by
+// signature extractors (which don't have a BtcTxSign for each input). The
+// caller must supply prevScripts and amounts for every input.
+func (tx *BtcTx) taprootSighashPartsRaw(prevScripts [][]byte, amounts []BtcAmount) (*taprootSighashParts, error) {
+	if len(prevScripts) != len(tx.In) {
+		return nil, fmt.Errorf("taproot: prevScripts (%d) must match input count (%d)", len(prevScripts), len(tx.In))
+	}
+	if len(amounts) != len(tx.In) {
+		return nil, fmt.Errorf("taproot: amounts (%d) must match input count (%d)", len(amounts), len(tx.In))
+	}
 	prev := sha256.New()
 	amt := sha256.New()
 	spk := sha256.New()
@@ -57,22 +79,21 @@ func (tx *BtcTx) taprootSighashParts(keys []*BtcTxSign) (*taprootSighashParts, e
 	}
 
 	for i, in := range tx.In {
-		k := keys[i]
-		if len(k.PrevScript) == 0 {
-			return nil, fmt.Errorf("taproot: input %d missing PrevScript (required when any input uses p2tr)", i)
+		if len(prevScripts[i]) == 0 {
+			return nil, fmt.Errorf("taproot: input %d missing prev script", i)
 		}
-		parts.prevScriptsByIn[i] = k.PrevScript
-		parts.amountsByIn[i] = uint64(k.Amount)
+		parts.prevScriptsByIn[i] = prevScripts[i]
+		parts.amountsByIn[i] = uint64(amounts[i])
 
 		txid := slices.Clone(in.TXID[:])
 		slices.Reverse(txid)
 		prev.Write(txid)
 		prev.Write(binary.LittleEndian.AppendUint32(nil, in.Vout))
 
-		amt.Write(binary.LittleEndian.AppendUint64(nil, uint64(k.Amount)))
+		amt.Write(binary.LittleEndian.AppendUint64(nil, uint64(amounts[i])))
 
-		spk.Write(BtcVarInt(len(k.PrevScript)).Bytes())
-		spk.Write(k.PrevScript)
+		spk.Write(BtcVarInt(len(prevScripts[i])).Bytes())
+		spk.Write(prevScripts[i])
 
 		seq.Write(binary.LittleEndian.AppendUint32(nil, in.Sequence))
 	}
@@ -90,6 +111,66 @@ func (tx *BtcTx) taprootSighashParts(keys []*BtcTxSign) (*taprootSighashParts, e
 	parts.shaSequences = seq.Sum(nil)
 	parts.shaOutputs = out.Sum(nil)
 	return parts, nil
+}
+
+// TaprootInputSighash computes the BIP-341 sighash digest for input n given
+// the parsed taproot signature and the prev_out script and amount of every
+// input in the transaction (BIP-341 commits to all of them). Supports both
+// key-path and script-path (single-sig `<xpk> OP_CHECKSIG` leaf) spends with
+// SIGHASH_DEFAULT. Annexes are not supported.
+func (tx *BtcTx) TaprootInputSighash(n int, sig *BtcInputSig, prevScripts [][]byte, amounts []BtcAmount) ([]byte, error) {
+	if n < 0 || n >= len(tx.In) {
+		return nil, fmt.Errorf("input index %d out of range (have %d inputs)", n, len(tx.In))
+	}
+	if sig.SigHashFlag != 0 {
+		return nil, fmt.Errorf("taproot: only SIGHASH_DEFAULT (0) supported, got 0x%x", sig.SigHashFlag)
+	}
+	parts, err := tx.taprootSighashPartsRaw(prevScripts, amounts)
+	if err != nil {
+		return nil, err
+	}
+	switch sig.Scheme {
+	case "p2tr-keypath":
+		return tx.taprootKeySpendSighash(n, 0x00, parts)
+	case "p2tr-scriptpath":
+		if sig.LeafScript == nil {
+			return nil, errors.New("p2tr-scriptpath requires LeafScript")
+		}
+		return tx.taprootScriptPathSighash(n, 0x00, parts, sig.LeafScript)
+	}
+	return nil, fmt.Errorf("not a taproot scheme: %s", sig.Scheme)
+}
+
+// taprootScriptPathSighash computes the BIP-341 script-path sighash with the
+// BIP-342 tapscript ext fields appended (tapleaf hash, key version, codesep
+// position). leafScript is the tapleaf script bytes; the leaf version is
+// assumed to be 0xc0 (the only one currently defined). Annex is not supported.
+func (tx *BtcTx) taprootScriptPathSighash(n int, hashType byte, parts *taprootSighashParts, leafScript []byte) ([]byte, error) {
+	if hashType != 0x00 {
+		return nil, fmt.Errorf("taproot: only SIGHASH_DEFAULT (0x00) is supported, got 0x%02x", hashType)
+	}
+	leafLen := BtcVarInt(len(leafScript)).Bytes()
+	tapleafHash := bip340TaggedHash("TapLeaf", []byte{0xc0}, leafLen, leafScript)
+
+	buf := make([]byte, 0, 207)
+	buf = append(buf, 0x00) // epoch
+	buf = append(buf, hashType)
+	buf = binary.LittleEndian.AppendUint32(buf, tx.Version)
+	buf = binary.LittleEndian.AppendUint32(buf, tx.Locktime)
+	buf = append(buf, parts.shaPrevouts...)
+	buf = append(buf, parts.shaAmounts...)
+	buf = append(buf, parts.shaScriptPubs...)
+	buf = append(buf, parts.shaSequences...)
+	buf = append(buf, parts.shaOutputs...)
+	buf = append(buf, 0x02) // spend_type: script-path, no annex
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(n))
+
+	// BIP-342 ext: tapleaf_hash || key_version || codesep_position
+	buf = append(buf, tapleafHash...)
+	buf = append(buf, 0x00) // key_version: 0
+	buf = binary.LittleEndian.AppendUint32(buf, 0xFFFFFFFF)
+
+	return bip340TaggedHash("TapSighash", buf), nil
 }
 
 // taprootKeySpendSighash computes the BIP-341 SIGHASH_DEFAULT sighash digest

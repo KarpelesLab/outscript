@@ -143,6 +143,167 @@ func TestExtractInputSigUnsupported(t *testing.T) {
 	}
 }
 
+// TestExtractAndVerifyP2TRKeyPath signs a P2TR key-path tx via outscript.Sign,
+// re-extracts the Schnorr sig via ExtractBtcInputSig, recomputes the BIP-341
+// sighash with TaprootInputSighash, and verifies the signature.
+func TestExtractAndVerifyP2TRKeyPath(t *testing.T) {
+	privBytes := must(hex.DecodeString("0101010101010101010101010101010101010101010101010101010101010101"))
+	priv := secp256k1.PrivKeyFromBytes(privBytes)
+	scriptPubKey, err := outscript.New(priv.PubKey()).Generate("p2tr")
+	if err != nil {
+		t.Fatalf("gen: %v", err)
+	}
+
+	tx := &outscript.BtcTx{
+		Version: 2,
+		In: []*outscript.BtcTxInput{{
+			Vout:     0,
+			Sequence: 0xffffffff,
+		}},
+		Out: []*outscript.BtcTxOutput{{
+			Amount: outscript.BtcAmount(90000),
+			Script: scriptPubKey,
+		}},
+	}
+
+	if err := tx.Sign(&outscript.BtcTxSign{
+		Key:        priv,
+		Scheme:     "p2tr",
+		Amount:     outscript.BtcAmount(100000),
+		PrevScript: scriptPubKey,
+	}); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	sigs, err := outscript.ExtractBtcInputSig(tx.In[0].Script, tx.In[0].Witnesses)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(sigs) != 1 || sigs[0].Scheme != "p2tr-keypath" {
+		t.Fatalf("expected 1 p2tr-keypath sig, got %+v", sigs)
+	}
+	sig := sigs[0]
+	if sig.SigHashFlag != 0 {
+		t.Errorf("sighash flag: got %d, want 0 (default)", sig.SigHashFlag)
+	}
+
+	// PubKey is not set by Extract for key-path; the caller fills it from the
+	// prev_out scriptPubKey: OP_1 PUSH32 <xpk>.
+	sig.PubKey = scriptPubKey[2:]
+
+	digest, err := tx.TaprootInputSighash(0, sig,
+		[][]byte{scriptPubKey},
+		[]outscript.BtcAmount{100000},
+	)
+	if err != nil {
+		t.Fatalf("sighash: %v", err)
+	}
+
+	// The 64-byte witness sig must verify against the tweaked output key.
+	ok, err := outscript.BIP340VerifyForTest(scriptPubKey[2:], digest, tx.In[0].Witnesses[0])
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !ok {
+		t.Error("recomputed sighash does not match the signature")
+	}
+}
+
+// TestExtractAndVerifyP2TRScriptPath manually constructs a script-path witness
+// (outscript has no script-path signer), then round-trips it: extract, recompute
+// sighash, verify the schnorr sig over the recomputed sighash.
+func TestExtractAndVerifyP2TRScriptPath(t *testing.T) {
+	privBytes := must(hex.DecodeString("0303030303030303030303030303030303030303030303030303030303030303"))
+	priv := secp256k1.PrivKeyFromBytes(privBytes)
+	pubComp, _ := outscript.New(priv.PubKey()).Generate("pubkey:comp")
+	xpk := pubComp[1:] // x-only pubkey (32 bytes)
+
+	// Tapleaf script: PUSH32 <xpk> OP_CHECKSIG
+	leafScript := slices.Concat([]byte{0x20}, xpk, []byte{0xac})
+
+	// A throwaway prev_out scriptPubKey ("OP_1 <push32 32-zero bytes>") — the
+	// content doesn't have to be a real taproot output for this test because
+	// BIP-341 only uses it via the shaScriptPubs commitment.
+	prevScript := slices.Concat([]byte{0x51, 0x20}, make([]byte, 32))
+
+	tx := &outscript.BtcTx{
+		Version: 2,
+		In: []*outscript.BtcTxInput{{
+			Vout:     0,
+			Sequence: 0xffffffff,
+		}},
+		Out: []*outscript.BtcTxOutput{{
+			Amount: outscript.BtcAmount(90000),
+			Script: prevScript,
+		}},
+	}
+
+	// Compute the script-path sighash; we use a stub BtcInputSig that carries
+	// only the leaf script — the SigHashFlag must be 0 (SIGHASH_DEFAULT).
+	stub := &outscript.BtcInputSig{
+		Scheme:      "p2tr-scriptpath",
+		SigHashFlag: 0,
+		LeafScript:  leafScript,
+	}
+	digest, err := tx.TaprootInputSighash(0, stub,
+		[][]byte{prevScript},
+		[]outscript.BtcAmount{100000},
+	)
+	if err != nil {
+		t.Fatalf("sighash: %v", err)
+	}
+
+	// BIP-340 sign the digest with the internal key (no taproot tweak — the
+	// signer of a script-path uses the raw x-only key from the leaf).
+	var aux [32]byte
+	sig, err := outscript.BIP340SignForTest(priv, digest, aux[:])
+	if err != nil {
+		t.Fatalf("schnorr sign: %v", err)
+	}
+
+	// Build a fabricated control block: 33 bytes, leaf version 0xc0, parity 0,
+	// and a 32-byte zero internal pubkey. (Not a valid commitment, but the
+	// sighash computation doesn't validate it.)
+	controlBlock := slices.Concat([]byte{0xc0}, make([]byte, 32))
+
+	witness := [][]byte{sig, leafScript, controlBlock}
+
+	// Extract and verify.
+	sigs, err := outscript.ExtractBtcInputSig(nil, witness)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(sigs) != 1 || sigs[0].Scheme != "p2tr-scriptpath" {
+		t.Fatalf("expected 1 p2tr-scriptpath sig, got %+v", sigs)
+	}
+	got := sigs[0]
+	if !bytes.Equal(got.PubKey, xpk) {
+		t.Errorf("PubKey mismatch: got %x, want %x", got.PubKey, xpk)
+	}
+	if !bytes.Equal(got.LeafScript, leafScript) {
+		t.Errorf("LeafScript mismatch")
+	}
+
+	digest2, err := tx.TaprootInputSighash(0, got,
+		[][]byte{prevScript},
+		[]outscript.BtcAmount{100000},
+	)
+	if err != nil {
+		t.Fatalf("re-sighash: %v", err)
+	}
+	if !bytes.Equal(digest, digest2) {
+		t.Errorf("recomputed digest differs:\n  got  %x\n  want %x", digest2, digest)
+	}
+
+	ok, err := outscript.BIP340VerifyForTest(xpk, digest2, sig)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !ok {
+		t.Error("script-path schnorr verify failed")
+	}
+}
+
 // TestExtractAndVerifyP2SHMultisig constructs a 2-of-2 P2SH-multisig spend
 // manually (outscript has no multisig signer), then re-extracts and verifies.
 func TestExtractAndVerifyP2SHMultisig(t *testing.T) {
