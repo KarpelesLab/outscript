@@ -414,4 +414,21 @@ func TestExtractAndVerifyP2SHMultisig(t *testing.T) {
 	if !parsed1.Verify(digest, key1.PubKey()) {
 		t.Errorf("sig1 does not verify against recomputed digest")
 	}
+
+	// ResolveMultisigPubKey should pick each signer's pubkey out of the redeem
+	// script by trial verification.
+	pub0, err := sigs[0].ResolveMultisigPubKey(digest)
+	if err != nil {
+		t.Fatalf("resolve sig0: %s", err)
+	}
+	if !bytes.Equal(pub0, pk0) {
+		t.Errorf("sig0 resolved to %x, want %x", pub0, pk0)
+	}
+	pub1, err := sigs[1].ResolveMultisigPubKey(digest)
+	if err != nil {
+		t.Fatalf("resolve sig1: %s", err)
+	}
+	if !bytes.Equal(pub1, pk1) {
+		t.Errorf("sig1 resolved to %x, want %x", pub1, pk1)
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/BottleFmt/gobottle"
+	"github.com/KarpelesLab/secp256k1"
 	"golang.org/x/crypto/ripemd160"
 )
 
@@ -331,6 +332,39 @@ func (tx *BtcTx) InputSighash(n int, sig *BtcInputSig, prevScript []byte, amount
 		return gobottle.Hash(signString, sha256.New, sha256.New), nil
 	}
 	return nil, fmt.Errorf("unsupported scheme: %s", sig.Scheme)
+}
+
+// ResolveMultisigPubKey searches sig.Pubkeys for the one whose ECDSA signature
+// (sig.R, sig.S) verifies against the given digest. On a match, sets
+// sig.PubKey to the matched pubkey and returns it. Returns nil and no error
+// when no pubkey matches (e.g. malformed signature, wrong digest). A no-op
+// for non-multisig signatures.
+func (sig *BtcInputSig) ResolveMultisigPubKey(digest []byte) ([]byte, error) {
+	if sig.Scheme != "p2sh-multisig" {
+		return sig.PubKey, nil
+	}
+	if len(sig.Pubkeys) == 0 {
+		return nil, nil
+	}
+	var r, s secp256k1.ModNScalar
+	if overflow := r.SetByteSlice(sig.R); overflow {
+		return nil, errors.New("r >= curve order")
+	}
+	if overflow := s.SetByteSlice(sig.S); overflow {
+		return nil, errors.New("s >= curve order")
+	}
+	parsed := secp256k1.NewSignature(&r, &s)
+	for _, pk := range sig.Pubkeys {
+		pub, err := secp256k1.ParsePubKey(pk)
+		if err != nil {
+			continue
+		}
+		if parsed.Verify(digest, pub) {
+			sig.PubKey = pk
+			return pk, nil
+		}
+	}
+	return nil, nil
 }
 
 // legacySighash is the pre-segwit (BIP-143-free) sighash: clear all inputs'
