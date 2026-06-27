@@ -61,6 +61,34 @@ func TestBtcAmountUnmarshalTextTooManyDecimals(t *testing.T) {
 	}
 }
 
+// TestBtcAmountUnmarshalTextOverflow verifies that integer-overflow inputs are
+// rejected rather than silently wrapping around uint64.
+func TestBtcAmountUnmarshalTextOverflow(t *testing.T) {
+	overflowing := []string{
+		// integer * 1e8 overflow: MaxUint64/1e8 is ~1.8e11, so this overflows.
+		"1000000000000",
+		// decimal *10 loop overflow: combined digits == MaxUint64 with only one
+		// decimal, so the *=10 to reach 8 decimals overflows.
+		"1844674407370955161.5",
+	}
+	for _, s := range overflowing {
+		var ba outscript.BtcAmount
+		err := ba.UnmarshalText([]byte(s))
+		if err == nil {
+			t.Errorf("expected overflow error for %q, got nil (value=%d)", s, ba)
+		}
+	}
+
+	// A value that just fits should still succeed (21M BTC max supply).
+	var ba outscript.BtcAmount
+	if err := ba.UnmarshalText([]byte("21000000")); err != nil {
+		t.Errorf("unexpected error for in-range value: %s", err)
+	}
+	if ba != 21000000*1_0000_0000 {
+		t.Errorf("expected 2100000000000000, got %d", ba)
+	}
+}
+
 func TestBtcAmountUnmarshalJSONNull(t *testing.T) {
 	var ba outscript.BtcAmount
 	err := ba.UnmarshalJSON([]byte("null"))

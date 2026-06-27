@@ -2,6 +2,7 @@ package outscript
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -62,6 +63,9 @@ func (ba *BtcAmount) UnmarshalText(b []byte) error {
 		if err != nil {
 			return err
 		}
+		if v > math.MaxUint64/1_0000_0000 {
+			return errors.New("amount too large")
+		}
 		v = v * 1_0000_0000
 		*ba = BtcAmount(v)
 		return nil
@@ -81,6 +85,9 @@ func (ba *BtcAmount) UnmarshalText(b []byte) error {
 	for decCount < 8 {
 		// multiply by 10 until decCount==8
 		decCount += 1
+		if v > math.MaxUint64/10 {
+			return errors.New("amount too large")
+		}
 		v *= 10
 	}
 	*ba = BtcAmount(v)
