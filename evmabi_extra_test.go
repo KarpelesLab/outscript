@@ -1,6 +1,8 @@
 package outscript_test
 
 import (
+	"bytes"
+	"encoding/hex"
 	"math/big"
 	"testing"
 
@@ -217,5 +219,92 @@ func TestEvmCallError(t *testing.T) {
 	_, err := outscript.EvmCall("bad-abi")
 	if err == nil {
 		t.Error("expected error for invalid ABI")
+	}
+}
+
+// TestEvmCallAddressEncoding verifies that the "address" ABI type is encodable
+// (previously AppendAddressAny errored unconditionally) by round-tripping a
+// transfer(address,uint256) call.
+func TestEvmCallAddressEncoding(t *testing.T) {
+	addrHex := "2aeb8add8337360e088b7d9ce4e857b9be60f3a7"
+	addr := must(hex.DecodeString(addrHex))
+
+	data, err := outscript.EvmCall("transfer(address,uint256)", "0x"+addrHex, big.NewInt(1000))
+	if err != nil {
+		t.Fatalf("EvmCall failed: %s", err)
+	}
+	// 4-byte selector + 32-byte address word + 32-byte uint256
+	if len(data) != 4+32+32 {
+		t.Fatalf("unexpected calldata length %d", len(data))
+	}
+	// transfer(address,uint256) selector
+	if got := hex.EncodeToString(data[:4]); got != "a9059cbb" {
+		t.Errorf("unexpected selector %s", got)
+	}
+	// address word: first 12 bytes zero, last 20 are the address
+	word := data[4:36]
+	if !bytes.Equal(word[:12], make([]byte, 12)) {
+		t.Errorf("address word not left-padded with zeros: %x", word[:12])
+	}
+	if !bytes.Equal(word[12:], addr) {
+		t.Errorf("address mismatch: got %x want %x", word[12:], addr)
+	}
+	// uint256 word == 1000
+	if v := new(big.Int).SetBytes(data[36:]); v.Cmp(big.NewInt(1000)) != 0 {
+		t.Errorf("unexpected uint256 value %s", v)
+	}
+
+	// []byte and [20]byte forms must also work and produce the same encoding
+	dataBytes, err := outscript.EvmCall("transfer(address,uint256)", addr, big.NewInt(1000))
+	if err != nil {
+		t.Fatalf("EvmCall ([]byte) failed: %s", err)
+	}
+	if !bytes.Equal(dataBytes, data) {
+		t.Errorf("[]byte address encoding differs from string encoding")
+	}
+
+	var arr [20]byte
+	copy(arr[:], addr)
+	dataArr, err := outscript.EvmCall("transfer(address,uint256)", arr, big.NewInt(1000))
+	if err != nil {
+		t.Fatalf("EvmCall ([20]byte) failed: %s", err)
+	}
+	if !bytes.Equal(dataArr, data) {
+		t.Errorf("[20]byte address encoding differs from string encoding")
+	}
+}
+
+// TestEvmCallAddressInvalidLength verifies addresses that are not 20 bytes are rejected.
+func TestEvmCallAddressInvalidLength(t *testing.T) {
+	if _, err := outscript.EvmCall("transfer(address,uint256)", "0xdeadbeef", big.NewInt(1)); err == nil {
+		t.Fatal("expected error for non-20-byte address, got nil")
+	}
+}
+
+// TestAppendBigIntNegativeTwosComplement verifies negative integers encode to
+// the correct two's-complement 32-byte word (-1 => all ones).
+func TestAppendBigIntNegativeTwosComplement(t *testing.T) {
+	buf := outscript.NewAbiBuffer(nil)
+	if err := buf.AppendBigInt(big.NewInt(-1)); err != nil {
+		t.Fatalf("AppendBigInt(-1) failed: %s", err)
+	}
+	out := buf.Bytes()
+	if len(out) != 32 {
+		t.Fatalf("expected 32 bytes, got %d", len(out))
+	}
+	allFF := bytes.Repeat([]byte{0xff}, 32)
+	if !bytes.Equal(out, allFF) {
+		t.Errorf("expected all-ones word for -1, got %x", out)
+	}
+
+	// -2 => 0xff...fe
+	buf2 := outscript.NewAbiBuffer(nil)
+	if err := buf2.AppendBigInt(big.NewInt(-2)); err != nil {
+		t.Fatalf("AppendBigInt(-2) failed: %s", err)
+	}
+	out2 := buf2.Bytes()
+	want2 := append(bytes.Repeat([]byte{0xff}, 31), 0xfe)
+	if !bytes.Equal(out2, want2) {
+		t.Errorf("expected ...fe word for -2, got %x", out2)
 	}
 }

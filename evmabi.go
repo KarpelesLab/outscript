@@ -1,6 +1,7 @@
 package outscript
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -66,7 +67,9 @@ func (buf *AbiBuffer) EncodeAuto(params ...any) error {
 		case *Out:
 			if o.Name == "evm" || o.Name == "eth" {
 				// ethereum address
-				buf.AppendBigInt(new(big.Int).SetBytes(o.raw))
+				if err := buf.AppendBigInt(new(big.Int).SetBytes(o.raw)); err != nil {
+					return err
+				}
 			} else {
 				return fmt.Errorf("unsupported value type %s for EVM", o.Name)
 			}
@@ -132,7 +135,9 @@ func (buf *AbiBuffer) AppendBigInt(v *big.Int) error {
 	var inbuf [32]byte
 	// should we modulo instead?
 	if v.Sign() < 0 {
-		v = new(big.Int).Sub(big2pow32, v) // if o = -1, it will be set to all 1s (proper negative value for -1 in 256 bits)
+		// two's complement: 2^256 + v (v is negative). For v == -1 this
+		// yields an all-ones 32-byte word.
+		v = new(big.Int).Add(big2pow32, v)
 		if v.Sign() <= 0 {
 			return errors.New("big.Int value exceeds negative 256 bits")
 		}
@@ -173,9 +178,36 @@ func (buf *AbiBuffer) AppendUint256Any(v any) error {
 	}
 }
 
+// appendAddressBytes validates that addr is exactly 20 bytes and appends it as a
+// uint256-style ABI word (left-padded to 32 bytes).
+func (buf *AbiBuffer) appendAddressBytes(addr []byte) error {
+	if len(addr) != 20 {
+		return fmt.Errorf("evm address must be 20 bytes, got %d", len(addr))
+	}
+	return buf.AppendBigInt(new(big.Int).SetBytes(addr))
+}
+
 // AppendAddressAny appends a value as an ABI address parameter.
+// Supported Go types are *Out (eth/evm address), []byte, [20]byte, and string
+// ("0x..." hex). The decoded address must be exactly 20 bytes.
 func (buf *AbiBuffer) AppendAddressAny(v any) error {
 	switch o := v.(type) {
+	case *Out:
+		if o.Name != "evm" && o.Name != "eth" {
+			return fmt.Errorf("unsupported output type %s for evm abi type address", o.Name)
+		}
+		return buf.appendAddressBytes(o.raw)
+	case []byte:
+		return buf.appendAddressBytes(o)
+	case [20]byte:
+		return buf.appendAddressBytes(o[:])
+	case string:
+		s := strings.TrimPrefix(o, "0x")
+		addr, err := hex.DecodeString(s)
+		if err != nil {
+			return fmt.Errorf("invalid hex address: %w", err)
+		}
+		return buf.appendAddressBytes(addr)
 	default:
 		return fmt.Errorf("unsupported go type %T for evm abi type address", o)
 	}
