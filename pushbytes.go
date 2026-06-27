@@ -65,6 +65,9 @@ func ParsePushBytes(v []byte) ([]byte, int) {
 	}
 	switch p {
 	case 0x4c: // OP_PUSHDATA1
+		if len(v) < 1 {
+			return nil, 0
+		}
 		p = v[0]
 		v = v[1:]
 		if len(v) >= int(p) {
@@ -73,6 +76,9 @@ func ParsePushBytes(v []byte) ([]byte, int) {
 		// not enough data → error
 		return nil, 0
 	case 0x4d: // OP_PUSHDATA2
+		if len(v) < 2 {
+			return nil, 0
+		}
 		l := binary.LittleEndian.Uint16(v[:2])
 		v = v[2:]
 		if len(v) >= int(l) {
@@ -80,6 +86,9 @@ func ParsePushBytes(v []byte) ([]byte, int) {
 		}
 		return nil, 0
 	case 0x4e: // OP_PUSHDATA4
+		if len(v) < 4 {
+			return nil, 0
+		}
 		l := binary.LittleEndian.Uint32(v[:4])
 		v = v[4:]
 		if len(v) >= int(l) {

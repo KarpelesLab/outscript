@@ -116,3 +116,20 @@ func TestParsePushBytesUnknownOpcode(t *testing.T) {
 		t.Error("expected nil,0 for unknown opcode")
 	}
 }
+
+func TestParsePushBytesTruncatedPushData(t *testing.T) {
+	// These inputs previously caused out-of-bounds panics because the length
+	// prefix was read before checking the buffer length.
+	cases := [][]byte{
+		{0x4c},                   // OP_PUSHDATA1 with no length byte
+		{0x4d, 0x00},             // OP_PUSHDATA2 with only 1 of 2 length bytes
+		{0x4e, 0x01, 0x02, 0x03}, // OP_PUSHDATA4 with only 3 of 4 length bytes
+		{0x4c, 0x05, 0xaa},       // OP_PUSHDATA1 declaring 5 bytes but only 1 present
+	}
+	for i, buf := range cases {
+		parsed, n := outscript.ParsePushBytes(buf)
+		if parsed != nil || n != 0 {
+			t.Errorf("case %d: expected nil,0 for truncated pushdata, got %v,%d", i, parsed, n)
+		}
+	}
+}

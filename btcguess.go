@@ -89,11 +89,25 @@ func GuessPubKeyAndHashByInScript(scriptBytes []byte) (foundPubKey []byte, found
 	}
 
 	// P2PKH: push1 is usually signature, and push2 the pubkey
-	if push1 != nil && push2 != nil {
+	if push1 != nil && push2 != nil && isPlausibleSecp256k1PubKey(push2) {
 		foundPubKey = push2
 		foundPubKeyHash = gobottle.Hash(foundPubKey, sha256.New, ripemd160.New)
 		return foundPubKey, foundPubKeyHash
 	}
 
 	return nil, nil
+}
+
+// isPlausibleSecp256k1PubKey reports whether b has the shape of a valid secp256k1
+// public key: a 33-byte compressed key prefixed with 0x02/0x03, or a 65-byte
+// uncompressed key prefixed with 0x04. Empty or otherwise shaped pushes are rejected.
+func isPlausibleSecp256k1PubKey(b []byte) bool {
+	switch len(b) {
+	case 33:
+		return b[0] == 0x02 || b[0] == 0x03
+	case 65:
+		return b[0] == 0x04
+	default:
+		return false
+	}
 }
