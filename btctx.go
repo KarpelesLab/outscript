@@ -34,7 +34,7 @@ func (h Hex32) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON decodes a hex string into the 32-byte value.
-func (h Hex32) UnmarshalJSON(v []byte) error {
+func (h *Hex32) UnmarshalJSON(v []byte) error {
 	if string(v) == "null" {
 		return nil
 	}
@@ -101,6 +101,18 @@ func (tx *BtcTx) Sign(keys ...*BtcTxSign) error {
 		}
 		if k.Scheme != "p2tr" && k.SigHash == 0 {
 			k.SigHash = 1 // default to SIGHASH_ALL
+		}
+
+		// For non-taproot ECDSA paths only SIGHASH_ALL is actually implemented:
+		// the signing code always commits to all inputs/outputs. Reject any other
+		// flag rather than silently producing a signature over the wrong digest.
+		// The BCH fork-id bit (0x40) is allowed (so 0x41 is valid); SIGHASH_NONE,
+		// SIGHASH_SINGLE and ANYONECANPAY (0x80) are not. Taproot validates its own
+		// sighash flags separately.
+		if k.Scheme != "p2tr" {
+			if (k.SigHash&0x1f) != 1 || (k.SigHash&0x80) == 0x80 {
+				return fmt.Errorf("unsupported SIGHASH flag 0x%x: only SIGHASH_ALL (optionally with fork-id 0x40) is implemented", k.SigHash)
+			}
 		}
 
 		switch k.Scheme {
@@ -538,6 +550,9 @@ func (tx *BtcTx) ReadFrom(r io.Reader) (int64, error) {
 		for _, in := range tx.In {
 			var witnessCnt BtcVarInt
 			h.readTo(&witnessCnt)
+			if witnessCnt > 10000 {
+				return h.err(errors.New("invalid transaction: too many witness items"))
+			}
 			in.Witnesses = make([][]byte, witnessCnt)
 			for n := range in.Witnesses {
 				in.Witnesses[n] = h.readVarBuf()
