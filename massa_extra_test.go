@@ -19,3 +19,14 @@ func TestParseMassaAddressInvalidBase58(t *testing.T) {
 		t.Error("expected error for invalid base58")
 	}
 }
+
+func TestParseMassaAddressShort(t *testing.T) {
+	// short base58 payloads used to panic with out-of-bounds slicing; they must
+	// now return an error instead.
+	for _, addr := range []string{"AU1", "AS1", "AU", "AS", "AU11", "AStt"} {
+		_, err := outscript.ParseMassaAddress(addr)
+		if err == nil {
+			t.Errorf("expected error for short massa address %q", addr)
+		}
+	}
+}

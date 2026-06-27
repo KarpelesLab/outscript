@@ -39,6 +39,10 @@ func ParseMassaAddress(address string) (*Out, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode massa address: %w", err)
 	}
+	// require at least the 4 checksum bytes before slicing
+	if len(buf) < 4 {
+		return nil, errors.New("massa address too short")
+	}
 	// check hash
 	chk := buf[len(buf)-4:]
 	buf = buf[:len(buf)-4]
