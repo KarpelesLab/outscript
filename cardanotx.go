@@ -76,7 +76,7 @@ var cardanoEncMode = func() cbor.EncMode {
 
 // cardanoAssetMap groups assets by policy id into the CBOR multiasset structure
 // {policy_id => {asset_name => amount}}.
-func cardanoAssetMap(assets []CardanoAsset) map[string]map[string]uint64 {
+func cardanoAssetMap(assets []CardanoAsset) (map[string]map[string]uint64, error) {
 	out := make(map[string]map[string]uint64)
 	for _, a := range assets {
 		inner, ok := out[string(a.PolicyID)]
@@ -84,26 +84,36 @@ func cardanoAssetMap(assets []CardanoAsset) map[string]map[string]uint64 {
 			inner = make(map[string]uint64)
 			out[string(a.PolicyID)] = inner
 		}
-		inner[string(a.AssetName)] += a.Amount
+		prev := inner[string(a.AssetName)]
+		sum := prev + a.Amount
+		if sum < prev {
+			// uint64 overflow when aggregating duplicate (policy, asset name) entries.
+			return nil, fmt.Errorf("cardano asset amount overflow for policy %x asset %x", a.PolicyID, a.AssetName)
+		}
+		inner[string(a.AssetName)] = sum
 	}
-	return out
+	return out, nil
 }
 
 // outputValue returns the CBOR representation of an output's value: a bare coin
 // (uint) for ADA-only outputs, or [coin, multiasset] when native tokens present.
-func (o *CardanoOutput) outputValue() interface{} {
+func (o *CardanoOutput) outputValue() (interface{}, error) {
 	if len(o.Assets) == 0 {
-		return o.Amount
+		return o.Amount, nil
+	}
+	assetMap, err := cardanoAssetMap(o.Assets)
+	if err != nil {
+		return nil, err
 	}
 	multiasset := make(map[cbor.ByteString]map[cbor.ByteString]uint64)
-	for policy, names := range cardanoAssetMap(o.Assets) {
+	for policy, names := range assetMap {
 		inner := make(map[cbor.ByteString]uint64, len(names))
 		for name, amount := range names {
 			inner[cbor.ByteString(name)] = amount
 		}
 		multiasset[cbor.ByteString(policy)] = inner
 	}
-	return []interface{}{o.Amount, multiasset}
+	return []interface{}{o.Amount, multiasset}, nil
 }
 
 // bodyMap builds the transaction_body as an integer-keyed CBOR map.
@@ -128,7 +138,11 @@ func (tx *CardanoTx) bodyMap() (map[uint64]interface{}, error) {
 		if len(out.Address) == 0 {
 			return nil, errors.New("cardano output has empty address")
 		}
-		outputs = append(outputs, []interface{}{out.Address, out.outputValue()})
+		value, err := out.outputValue()
+		if err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, []interface{}{out.Address, value})
 	}
 
 	body := map[uint64]interface{}{

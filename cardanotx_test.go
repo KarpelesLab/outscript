@@ -172,6 +172,34 @@ func TestCardanoTxRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCardanoAssetAmountOverflow ensures that aggregating two duplicate
+// (policy, asset name) entries whose amounts overflow uint64 is reported as an
+// error rather than silently wrapping.
+func TestCardanoAssetAmountOverflow(t *testing.T) {
+	txid, _ := hex.DecodeString("5c32d3c670337ad0ef69e5bf8cbd26cee7a736ee0fba41e63ec071671c1a6376")
+	policy, _ := hex.DecodeString("00000000000000000000000000000000000000000000000000000000")
+	tx := &outscript.CardanoTx{
+		Inputs: []*outscript.CardanoInput{{TxID: txid, Index: 1}},
+		Outputs: []*outscript.CardanoOutput{
+			{
+				Address: mustAddrBytes(t, "addr1vx2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzers66hrl8"),
+				Amount:  2_000_000,
+				Assets: []outscript.CardanoAsset{
+					{PolicyID: policy, AssetName: []byte("TOKEN"), Amount: ^uint64(0)},
+					{PolicyID: policy, AssetName: []byte("TOKEN"), Amount: 1},
+				},
+			},
+		},
+		Fee: 180_000,
+	}
+	if _, err := tx.MarshalBinary(); err == nil {
+		t.Fatal("expected overflow error from MarshalBinary, got nil")
+	}
+	if _, err := tx.BodyBytes(); err == nil {
+		t.Fatal("expected overflow error from BodyBytes, got nil")
+	}
+}
+
 func TestCardanoTxMultiAsset(t *testing.T) {
 	txid, _ := hex.DecodeString("5c32d3c670337ad0ef69e5bf8cbd26cee7a736ee0fba41e63ec071671c1a6376")
 	policy, _ := hex.DecodeString("00000000000000000000000000000000000000000000000000000000")
