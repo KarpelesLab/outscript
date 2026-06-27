@@ -222,18 +222,49 @@ tx := &outscript.CardanoTx{
     TTL: 41_000_000, // optional (slot); 0 omits it
 }
 
-// Sign with one or more Ed25519 keys (appends a vkey witness per key)
+// Sign with one or more standard Ed25519 keys (appends a vkey witness per key)
 tx.Sign(privKey)
 
 data, _ := tx.MarshalBinary() // CBOR transaction
 txid, _ := tx.Hash()          // blake2b-256 of the body
 ```
 
+Cardano HD wallets (CIP-1852) use BIP32-Ed25519 *extended* keys, which store an
+already-expanded 64-byte secret and cannot be used with `crypto/ed25519`. Sign
+with those (or any external/HSM signer) through the `CardanoSigner` interface:
+
+```go
+// secret is the 64-byte extended secret (e.g. the first 64 bytes of an xprv)
+ext, _ := outscript.NewCardanoExtendedKey(secret)
+tx.SignWith(ext) // produces a standard Ed25519 signature, verifiable as usual
+```
+
+#### HD key derivation (CIP-1852 / BIP32-Ed25519)
+
+Derive keys from BIP-39 entropy using the Icarus master-key scheme and the
+CIP-1852 path `m/1852'/1815'/account'/role/index`:
+
+```go
+master, _ := outscript.CardanoIcarusMasterKey(entropy, nil) // nil = no passphrase
+H := outscript.CardanoHarden
+
+// payment key m/1852'/1815'/0'/0/0 and stake key m/1852'/1815'/0'/2/0
+spend, _ := master.DerivePath(H(1852), H(1815), H(0), 0, 0)
+stake, _ := master.DerivePath(H(1852), H(1815), H(0), 2, 0)
+
+ph := outscript.CardanoKeyHash(spend.CardanoPublicKey())
+sh := outscript.CardanoKeyHash(stake.CardanoPublicKey())
+addr, _ := outscript.CardanoBaseAddress(ph, sh, "cardano") // addr1...
+
+// spend can sign transactions directly via SignWith.
+// Watch-only soft derivation (no private key) is available from an xpub:
+xpub := master.DerivePath(H(1852), H(1815), H(0), 0).ExtendedPublicKey()
+child, _ := xpub.DeriveChild(0)
+```
+
 Native tokens are added via `CardanoOutput.Assets` (`CardanoAsset{PolicyID,
 AssetName, Amount}`). Plutus scripts, certificates, staking actions and metadata
-are out of scope. Cardano HD wallets typically use BIP32-Ed25519 extended keys;
-`Sign` uses standard `crypto/ed25519`, so the signing key must correspond to the
-public key that derived the spent address.
+are out of scope.
 
 ### Block Rewards
 

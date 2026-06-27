@@ -167,22 +167,39 @@ func (tx *CardanoTx) Hash() ([]byte, error) {
 	return tx.SignBytes()
 }
 
-// Sign signs the transaction body with each provided Ed25519 private key and
-// appends a vkey witness for each. Existing witnesses are preserved.
+// Sign signs the transaction body with each provided standard Ed25519 private key
+// and appends a vkey witness for each. Existing witnesses are preserved. For
+// BIP32-Ed25519 extended keys or external signers, use [CardanoTx.SignWith].
 func (tx *CardanoTx) Sign(keys ...ed25519.PrivateKey) error {
+	signers := make([]CardanoSigner, len(keys))
+	for i, key := range keys {
+		signers[i] = cardanoStdSigner{key: key}
+	}
+	return tx.SignWith(signers...)
+}
+
+// SignWith signs the transaction body with each provided [CardanoSigner] and
+// appends a vkey witness for each. Existing witnesses are preserved.
+func (tx *CardanoTx) SignWith(signers ...CardanoSigner) error {
 	digest, err := tx.SignBytes()
 	if err != nil {
 		return err
 	}
-	for _, key := range keys {
-		pub, ok := key.Public().(ed25519.PublicKey)
-		if !ok {
-			return fmt.Errorf("unexpected public key type %T", key.Public())
+	for _, signer := range signers {
+		pub := signer.CardanoPublicKey()
+		if len(pub) != 32 {
+			return fmt.Errorf("cardano signer public key must be 32 bytes, got %d", len(pub))
 		}
-		sig := ed25519.Sign(key, digest)
+		sig, err := signer.SignCardano(digest)
+		if err != nil {
+			return err
+		}
+		if len(sig) != 64 {
+			return fmt.Errorf("cardano signature must be 64 bytes, got %d", len(sig))
+		}
 		tx.Witnesses = append(tx.Witnesses, &CardanoVkeyWitness{
 			VKey:      append([]byte(nil), pub...),
-			Signature: sig,
+			Signature: append([]byte(nil), sig...),
 		})
 	}
 	return nil
