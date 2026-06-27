@@ -152,3 +152,97 @@ func TestSolanaTxVerifyRoundTrip(t *testing.T) {
 		t.Fatalf("verify failed after round-trip: %s", err)
 	}
 }
+
+// --- Security regression tests ---
+
+// buildLegacyMessage assembles a legacy SolanaMessage wire-format body for tests.
+func buildLegacyMessage(header []byte, keyCount []byte, numKeys int, ix []byte) []byte {
+	buf := append([]byte{}, header...)
+	buf = append(buf, keyCount...)
+	for i := 0; i < numKeys; i++ {
+		buf = append(buf, make([]byte, 32)...) // account key
+	}
+	buf = append(buf, make([]byte, 32)...) // recent blockhash
+	buf = append(buf, ix...)
+	return buf
+}
+
+// TestSolanaMessageHeaderCountTooLarge verifies a message declaring more
+// required signatures than account keys is rejected by UnmarshalBinary.
+func TestSolanaMessageHeaderCountTooLarge(t *testing.T) {
+	// header: NumRequiredSignatures=2, others=0; keyCount=1
+	data := buildLegacyMessage([]byte{0x02, 0x00, 0x00}, []byte{0x01}, 1, []byte{0x00})
+	var msg outscript.SolanaMessage
+	if err := msg.UnmarshalBinary(data); err == nil {
+		t.Fatal("expected error for NumRequiredSignatures > account count, got nil")
+	}
+}
+
+// TestSolanaVerifySignNoPanicOnBadHeader verifies Verify and Sign return an
+// error (rather than panic) when the header references more signers than keys.
+func TestSolanaVerifySignNoPanicOnBadHeader(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+
+	tx := &outscript.SolanaTx{
+		Signatures: make([][]byte, 3),
+		Message: outscript.SolanaMessage{
+			Header:      outscript.SolanaMessageHeader{NumRequiredSignatures: 3},
+			AccountKeys: nil, // no keys at all
+		},
+	}
+	if err := tx.Verify(); err == nil {
+		t.Error("expected Verify error on bad header, got nil")
+	}
+
+	seed := must(hex.DecodeString("20a1c9d559159085c82ae54e35f332a2d54aab952dd5832c42d06fb0548d5f88"))
+	key := ed25519.NewKeyFromSeed(seed)
+	if err := tx.Sign(key); err == nil {
+		t.Error("expected Sign error on bad header, got nil")
+	}
+}
+
+// TestSolanaNonCanonicalCompactU16 verifies a non-canonical compact-u16
+// encoding ([0x80,0x00]) is rejected.
+func TestSolanaNonCanonicalCompactU16(t *testing.T) {
+	// header valid, then non-canonical compact-u16 for account key count.
+	data := append([]byte{0x01, 0x00, 0x00}, 0x80, 0x00)
+	var msg outscript.SolanaMessage
+	if err := msg.UnmarshalBinary(data); err == nil {
+		t.Fatal("expected error for non-canonical compact-u16, got nil")
+	}
+}
+
+// TestSolanaInstructionIndexOutOfRange verifies an instruction referencing a
+// program id index beyond the account key list is rejected.
+func TestSolanaInstructionIndexOutOfRange(t *testing.T) {
+	// header: 1 signer; keyCount=1; one instruction with ProgramIDIndex=5.
+	ix := []byte{
+		0x01, // instruction count = 1
+		0x05, // ProgramIDIndex = 5 (out of range, only 1 key)
+		0x00, // account index count = 0
+		0x00, // data length = 0
+	}
+	data := buildLegacyMessage([]byte{0x01, 0x00, 0x00}, []byte{0x01}, 1, ix)
+	var msg outscript.SolanaMessage
+	if err := msg.UnmarshalBinary(data); err == nil {
+		t.Fatal("expected error for out-of-range program id index, got nil")
+	}
+
+	// Also test an out-of-range account index.
+	ix2 := []byte{
+		0x01, // instruction count = 1
+		0x00, // ProgramIDIndex = 0 (valid)
+		0x01, // account index count = 1
+		0x09, // account index = 9 (out of range)
+		0x00, // data length = 0
+	}
+	data2 := buildLegacyMessage([]byte{0x01, 0x00, 0x00}, []byte{0x01}, 1, ix2)
+	var msg2 outscript.SolanaMessage
+	if err := msg2.UnmarshalBinary(data2); err == nil {
+		t.Fatal("expected error for out-of-range account index, got nil")
+	}
+}

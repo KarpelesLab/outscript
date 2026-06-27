@@ -407,6 +407,9 @@ func (tx *SolanaTx) Sign(keys ...ed25519.PrivateKey) error {
 	header := tx.messageHeader()
 	accountKeys := tx.messageAccountKeys()
 	numSigners := int(header.NumRequiredSignatures)
+	if numSigners > len(accountKeys) {
+		return fmt.Errorf("invalid header: %d required signers but only %d account keys", numSigners, len(accountKeys))
+	}
 	for _, key := range keys {
 		pub := key.Public().(ed25519.PublicKey)
 		var pubKey SolanaKey
@@ -439,6 +442,9 @@ func (tx *SolanaTx) Verify() error {
 	header := tx.messageHeader()
 	accountKeys := tx.messageAccountKeys()
 	numSigners := int(header.NumRequiredSignatures)
+	if numSigners > len(accountKeys) {
+		return fmt.Errorf("invalid header: %d required signers but only %d account keys", numSigners, len(accountKeys))
+	}
 	if len(tx.Signatures) < numSigners {
 		return fmt.Errorf("expected %d signatures, got %d", numSigners, len(tx.Signatures))
 	}
@@ -577,6 +583,10 @@ func (msg *SolanaMessage) UnmarshalBinary(data []byte) error {
 		r = r[32:]
 	}
 
+	if err := validateSolanaHeader(msg.Header, keyCount); err != nil {
+		return err
+	}
+
 	if len(r) < 32 {
 		return io.ErrUnexpectedEOF
 	}
@@ -588,6 +598,11 @@ func (msg *SolanaMessage) UnmarshalBinary(data []byte) error {
 		return fmt.Errorf("reading instruction count: %w", err)
 	}
 	r = r[n:]
+	// Sanity cap: every instruction needs at least one byte (the program id
+	// index), so the count cannot exceed the remaining bytes.
+	if ixCount > len(r) {
+		return fmt.Errorf("instruction count %d exceeds remaining bytes %d", ixCount, len(r))
+	}
 
 	msg.Instructions = make([]SolanaCompiledInstruction, ixCount)
 	for i := 0; i < ixCount; i++ {
@@ -618,6 +633,18 @@ func (msg *SolanaMessage) UnmarshalBinary(data []byte) error {
 		}
 		msg.Instructions[i].Data = slices.Clone(r[:dataLen])
 		r = r[dataLen:]
+
+		// Validate that program and account indexes reference real account
+		// keys. For the legacy format the addressable set is exactly the
+		// static account key list.
+		if int(msg.Instructions[i].ProgramIDIndex) >= keyCount {
+			return fmt.Errorf("instruction %d program id index %d out of range (%d account keys)", i, msg.Instructions[i].ProgramIDIndex, keyCount)
+		}
+		for _, ai := range msg.Instructions[i].AccountIndices {
+			if int(ai) >= keyCount {
+				return fmt.Errorf("instruction %d account index %d out of range (%d account keys)", i, ai, keyCount)
+			}
+		}
 	}
 
 	return nil
@@ -705,6 +732,10 @@ func (msg *SolanaMessageV0) UnmarshalBinary(data []byte) error {
 		r = r[32:]
 	}
 
+	if err := validateSolanaHeader(msg.Header, keyCount); err != nil {
+		return err
+	}
+
 	if len(r) < 32 {
 		return io.ErrUnexpectedEOF
 	}
@@ -716,6 +747,11 @@ func (msg *SolanaMessageV0) UnmarshalBinary(data []byte) error {
 		return fmt.Errorf("reading instruction count: %w", err)
 	}
 	r = r[n:]
+	// Sanity cap: every instruction needs at least one byte (the program id
+	// index), so the count cannot exceed the remaining bytes.
+	if ixCount > len(r) {
+		return fmt.Errorf("instruction count %d exceeds remaining bytes %d", ixCount, len(r))
+	}
 
 	msg.Instructions = make([]SolanaCompiledInstruction, ixCount)
 	for i := 0; i < ixCount; i++ {
@@ -754,6 +790,11 @@ func (msg *SolanaMessageV0) UnmarshalBinary(data []byte) error {
 		return fmt.Errorf("reading address table lookup count: %w", err)
 	}
 	r = r[n:]
+	// Sanity cap: every lookup needs at least one byte, so the count cannot
+	// exceed the remaining bytes.
+	if lookupCount > len(r) {
+		return fmt.Errorf("address table lookup count %d exceeds remaining bytes %d", lookupCount, len(r))
+	}
 
 	msg.AddressTableLookups = make([]SolanaAddressTableLookup, lookupCount)
 	for i := 0; i < lookupCount; i++ {
@@ -786,6 +827,42 @@ func (msg *SolanaMessageV0) UnmarshalBinary(data []byte) error {
 		r = r[rCount:]
 	}
 
+	// Validate instruction indexes. For v0 the addressable account set is the
+	// static account keys followed by accounts loaded from address lookup
+	// tables (all writable indexes, then all readonly indexes). The lookup
+	// counts are only known after the lookups have been parsed, which is why
+	// this validation happens here rather than during instruction parsing.
+	addressable := keyCount
+	for _, l := range msg.AddressTableLookups {
+		addressable += len(l.WritableIndexes) + len(l.ReadonlyIndexes)
+	}
+	for i := range msg.Instructions {
+		if int(msg.Instructions[i].ProgramIDIndex) >= addressable {
+			return fmt.Errorf("instruction %d program id index %d out of range (%d addressable accounts)", i, msg.Instructions[i].ProgramIDIndex, addressable)
+		}
+		for _, ai := range msg.Instructions[i].AccountIndices {
+			if int(ai) >= addressable {
+				return fmt.Errorf("instruction %d account index %d out of range (%d addressable accounts)", i, ai, addressable)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateSolanaHeader checks that the message header account counts are
+// internally consistent with the number of account keys. This prevents
+// out-of-bounds indexing in Sign/Verify when handling a crafted message.
+func validateSolanaHeader(h SolanaMessageHeader, numKeys int) error {
+	if int(h.NumRequiredSignatures) > numKeys {
+		return fmt.Errorf("NumRequiredSignatures %d exceeds account key count %d", h.NumRequiredSignatures, numKeys)
+	}
+	if int(h.NumReadonlySignedAccounts) > int(h.NumRequiredSignatures) {
+		return fmt.Errorf("NumReadonlySignedAccounts %d exceeds NumRequiredSignatures %d", h.NumReadonlySignedAccounts, h.NumRequiredSignatures)
+	}
+	if int(h.NumRequiredSignatures)+int(h.NumReadonlyUnsignedAccounts) > numKeys {
+		return fmt.Errorf("NumRequiredSignatures + NumReadonlyUnsignedAccounts (%d) exceeds account key count %d", int(h.NumRequiredSignatures)+int(h.NumReadonlyUnsignedAccounts), numKeys)
+	}
 	return nil
 }
 
@@ -819,6 +896,11 @@ func solanaDecodeCompactU16(data []byte) (int, int, error) {
 	}
 	b1 := data[1]
 	if b1 < 0x80 {
+		// Reject non-canonical encodings: a 2-byte form whose high group is
+		// zero should have been encoded in a single byte.
+		if b1 == 0 {
+			return 0, 0, errors.New("non-canonical compact-u16")
+		}
 		return int(b0&0x7f) | int(b1)<<7, 2, nil
 	}
 	if len(data) < 3 {
@@ -827,6 +909,11 @@ func solanaDecodeCompactU16(data []byte) (int, int, error) {
 	b2 := data[2]
 	if b2 > 3 {
 		return 0, 0, errors.New("compact-u16 overflow")
+	}
+	// Reject non-canonical encodings: a 3-byte form whose high group is zero
+	// should have been encoded in two bytes.
+	if b2 == 0 {
+		return 0, 0, errors.New("non-canonical compact-u16")
 	}
 	return int(b0&0x7f) | int(b1&0x7f)<<7 | int(b2)<<14, 3, nil
 }
