@@ -118,6 +118,40 @@ func TestCardanoFromPubKey(t *testing.T) {
 	}
 }
 
+// TestCardanoParseHRPMismatch ensures the parser rejects checksum-valid addresses
+// whose human-readable prefix disagrees with the header byte (network confusion).
+func TestCardanoParseHRPMismatch(t *testing.T) {
+	bad := []struct {
+		name string
+		addr string
+	}{
+		// "stake" HRP wrapping an enterprise (payment) header (0x61).
+		{"stake prefix with payment header", "stake1vx2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzersuzp9l4"},
+		// "addr" (mainnet) HRP with a testnet network nibble (enterprise header 0x60).
+		{"addr mainnet prefix with testnet nibble", "addr1vz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzers6g8jlq"},
+		// "addr" (mainnet) HRP with a testnet base header (0x00).
+		{"addr mainnet prefix with testnet base nibble", "addr1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3n9a3vl7ljgpcrf6e0p5lrzxyq034l8e5d3gemafc3ey5q9syj92"},
+	}
+	for _, c := range bad {
+		if _, err := outscript.ParseCardanoAddress(c.addr); err == nil {
+			t.Errorf("%s: expected error parsing %s, got nil", c.name, c.addr)
+		}
+	}
+
+	// Legitimate addresses (all four prefixes) must still parse.
+	good := []string{
+		"addr1vx2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzers66hrl8",
+		"addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3n0d3vllmyqwsx5wktcd8cc3sq835lu7drv2xwl2wywfgs68faae",
+		"stake1uyehkck0lajq8gr28t9uxnuvgcqrc6070x3k9r8048z8y5gh6ffgw",
+		"stake_test1uqehkck0lajq8gr28t9uxnuvgcqrc6070x3k9r8048z8y5gssrtvn",
+	}
+	for _, a := range good {
+		if _, err := outscript.ParseCardanoAddress(a); err != nil {
+			t.Errorf("expected %s to parse, got error: %s", a, err)
+		}
+	}
+}
+
 func TestCardanoParseRoundTrip(t *testing.T) {
 	addrs := []string{
 		"addr1qx2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3n0d3vllmyqwsx5wktcd8cc3sq835lu7drv2xwl2wywfgse35a3x",

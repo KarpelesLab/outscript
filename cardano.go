@@ -179,6 +179,24 @@ func ParseCardanoAddress(address string) (*Out, error) {
 		return nil, fmt.Errorf("invalid cardano address length %d for type %d", len(payload), typ)
 	}
 
+	// Cross-check that the human-readable prefix agrees with the header byte, so a
+	// checksum-valid address can't claim a different network/kind than its HRP. The
+	// "stake"/"stake_test" prefixes must wrap a reward address; "addr"/"addr_test"
+	// must wrap a payment (base/enterprise) address. The "_test" suffix must match
+	// the testnet network id and its absence the mainnet id.
+	hrpIsStake := hrp == "stake" || hrp == "stake_test"
+	if hrpIsStake != (typ == cardanoTypeReward) {
+		return nil, fmt.Errorf("cardano address prefix %q does not match header type %d", hrp, typ)
+	}
+	hrpIsTestnet := strings.HasSuffix(hrp, "_test")
+	wantNet := byte(cardanoNetMainnet)
+	if hrpIsTestnet {
+		wantNet = cardanoNetTestnet
+	}
+	if net != wantNet {
+		return nil, fmt.Errorf("cardano address prefix %q does not match header network id %d", hrp, net)
+	}
+
 	flag := "cardano"
 	if net == cardanoNetTestnet {
 		flag = "cardano-testnet"
