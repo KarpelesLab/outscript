@@ -57,7 +57,7 @@ var chainConfigs = map[string]*chainRewardInfo{
 	},
 	"monacoin": {
 		model:           modelHalving,
-		initialReward:   big.NewInt(50_0000_0000), // 12.5 MONA in smallest units
+		initialReward:   big.NewInt(50_0000_0000), // 50 MONA in watoshi
 		halvingInterval: 1_051_200,
 	},
 
