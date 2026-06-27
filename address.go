@@ -124,6 +124,10 @@ func ParseBitcoinBasedAddress(network, address string) (*Out, error) {
 	// decode as base58
 	buf, err := base58.Bitcoin.Decode(address)
 	if err == nil {
+		// require at least 1 version byte + 4 checksum bytes before slicing
+		if len(buf) < 5 {
+			return nil, errors.New("address too short")
+		}
 		// check hash
 		chk := buf[len(buf)-4:]
 		buf = buf[:len(buf)-4]
@@ -133,6 +137,11 @@ func ParseBitcoinBasedAddress(network, address string) (*Out, error) {
 		}
 	}
 	if err == nil {
+		// legacy base58 addresses are always 1 version byte + a 20-byte hash
+		// payload; reject anything else to avoid building non-standard scripts
+		if len(buf) != 21 {
+			return nil, fmt.Errorf("invalid base58 address payload length %d", len(buf))
+		}
 		// https://en.bitcoin.it/wiki/List_of_address_prefixes
 		// 1Fw9zL4vzCaf8yCqz1kinoU6N71hcmJyvD 0x00
 		// 36WzxPKBV4ScwUKLPgmMZkphf7Np4rqjyo 0x05
@@ -405,10 +414,10 @@ func (out *Out) Address(flags ...string) (string, error) {
 		case "bitcoin-testnet":
 			return encodeBase58addr(0x6f, buf), nil
 		case "bitcoin":
-			fallthrough
-		default:
 			// "good old" format
 			return encodeBase58addr(0, buf), nil
+		default:
+			return "", fmt.Errorf("unsupported network %q for p2pkh address", net)
 		}
 	case "p2sh":
 		// 0xa9 <pushdata> 0x87
@@ -437,10 +446,10 @@ func (out *Out) Address(flags ...string) (string, error) {
 		case "bitcoin-testnet":
 			return encodeBase58addr(0xc4, buf), nil
 		case "bitcoin":
-			fallthrough
-		default:
 			// "good old" format
 			return encodeBase58addr(0x05, buf), nil
+		default:
+			return "", fmt.Errorf("unsupported network %q for p2sh address", net)
 		}
 	case "p2wpkh", "p2wsh":
 		// 0x00 <pushdata 20bytes>

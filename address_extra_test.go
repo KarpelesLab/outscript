@@ -1,12 +1,25 @@
 package outscript_test
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"testing"
 
+	"github.com/KarpelesLab/base58"
 	"github.com/KarpelesLab/outscript"
 	"github.com/KarpelesLab/secp256k1"
 )
+
+// encodeBase58Check builds a base58check string (version byte + payload +
+// double-sha256 checksum) for use in tests that need checksum-valid but
+// otherwise malformed addresses.
+func encodeBase58Check(vers byte, payload []byte) string {
+	buf := append([]byte{vers}, payload...)
+	h1 := sha256.Sum256(buf)
+	h2 := sha256.Sum256(h1[:])
+	buf = append(buf, h2[:4]...)
+	return base58.Bitcoin.Encode(buf)
+}
 
 func TestParseBitcoinAddress(t *testing.T) {
 	// Deprecated wrapper, should work like ParseBitcoinBasedAddress("auto", ...)
@@ -245,5 +258,56 @@ func TestParseBitcoinBasedAddressErrors(t *testing.T) {
 	_, err = outscript.ParseBitcoinBasedAddress("litecoin", "bc1q0yy3juscd3zfavw76g4h3eqdqzda7qyf58rj4m")
 	if err == nil {
 		t.Error("expected error for network mismatch on segwit address")
+	}
+}
+
+func TestParseBitcoinBasedAddressShortBase58(t *testing.T) {
+	// short base58 strings used to panic with out-of-bounds slicing; they must
+	// now return an error instead.
+	for _, addr := range []string{"1", "111", "a1", "11", "z", "abcd"} {
+		_, err := outscript.ParseBitcoinBasedAddress("auto", addr)
+		if err == nil {
+			t.Errorf("expected error for short base58 address %q", addr)
+		}
+		// deprecated wrapper must behave identically
+		_, err = outscript.ParseBitcoinAddress(addr)
+		if err == nil {
+			t.Errorf("expected error for short base58 address %q (ParseBitcoinAddress)", addr)
+		}
+	}
+}
+
+func TestParseBitcoinBasedAddressWrongPayloadLength(t *testing.T) {
+	// A checksum-valid base58 address whose payload is not exactly version+20
+	// bytes must be rejected rather than producing a non-standard script.
+	// "16UwLL9Risc3QfPqBUvKofHmBQ7wMtjvM" is the base58check encoding of just
+	// the version byte 0x00 with no hash payload (checksum valid).
+	short := encodeBase58Check(0x00, nil)
+	if _, err := outscript.ParseBitcoinBasedAddress("auto", short); err == nil {
+		t.Errorf("expected error for zero-length payload base58 address %q", short)
+	}
+	// A 19-byte payload (one short) must also be rejected.
+	short19 := encodeBase58Check(0x00, make([]byte, 19))
+	if _, err := outscript.ParseBitcoinBasedAddress("auto", short19); err == nil {
+		t.Errorf("expected error for 19-byte payload base58 address %q", short19)
+	}
+}
+
+func TestOutAddressUnknownNetwork(t *testing.T) {
+	key := secp256k1.PrivKeyFromBytes(must(hex.DecodeString("eb696a065ef48a2192da5b28b694f87544b30fae8327c4510137a922f32c6dcf")))
+	s := outscript.New(key.PubKey())
+
+	for _, format := range []string{"p2pkh", "p2sh:p2pkh"} {
+		sout, err := s.Out(format)
+		if err != nil {
+			t.Fatalf("Out(%s) failed: %s", format, err)
+		}
+		if _, err := sout.Address("not-a-real-network"); err == nil {
+			t.Errorf("expected error for unknown network on %s address", format)
+		}
+		// bitcoin must still work as the explicit mainnet case
+		if _, err := sout.Address("bitcoin"); err != nil {
+			t.Errorf("bitcoin network on %s address failed: %s", format, err)
+		}
 	}
 }
