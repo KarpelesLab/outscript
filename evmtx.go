@@ -12,9 +12,9 @@ import (
 	"strconv"
 
 	"github.com/BottleFmt/gobottle"
-	"github.com/KarpelesLab/typutil"
 	"github.com/KarpelesLab/rlp"
 	"github.com/KarpelesLab/secp256k1"
+	"github.com/KarpelesLab/typutil"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -175,6 +175,35 @@ func (tx *EvmTx) UnmarshalBinary(buf []byte) error {
 	return tx.ParseTransaction(buf)
 }
 
+// decodeUint64Checked safely decodes an RLP uint64 field, returning an error if
+// the field is longer than 8 bytes (rlp.DecodeUint64 would otherwise panic).
+func decodeUint64Checked(buf []byte) (uint64, error) {
+	if len(buf) > 8 {
+		return 0, fmt.Errorf("invalid uint64 field: length %d exceeds 8 bytes", len(buf))
+	}
+	return rlp.DecodeUint64(buf), nil
+}
+
+// asBytes extracts a []byte from an RLP-decoded value, returning an error on
+// type mismatch instead of panicking.
+func asBytes(v any) ([]byte, error) {
+	b, ok := v.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("expected rlp string (bytes), got %T", v)
+	}
+	return b, nil
+}
+
+// asList extracts a []any (RLP list) from an RLP-decoded value, returning an
+// error on type mismatch instead of panicking.
+func asList(v any) ([]any, error) {
+	l, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("expected rlp list, got %T", v)
+	}
+	return l, nil
+}
+
 // ParseTransaction will parse an incoming transaction and return an error in case of failure.
 // In case of error, the state of tx is undefined.
 func (tx *EvmTx) ParseTransaction(buf []byte) error {
@@ -199,9 +228,13 @@ func (tx *EvmTx) ParseTransaction(buf []byte) error {
 			return fmt.Errorf("lgacy transaction must have 6 or 9 fields, got %d", ln)
 		}
 		tx.Type = EvmTxLegacy
-		tx.Nonce = rlp.DecodeUint64(txData[0])
+		if tx.Nonce, err = decodeUint64Checked(txData[0]); err != nil {
+			return err
+		}
 		tx.GasFeeCap = new(big.Int).SetBytes(txData[1])
-		tx.Gas = rlp.DecodeUint64(txData[2])
+		if tx.Gas, err = decodeUint64Checked(txData[2]); err != nil {
+			return err
+		}
 		tx.To = "0x" + hex.EncodeToString(txData[3])
 		tx.Value = new(big.Int).SetBytes(txData[4])
 		tx.Data = txData[5]
@@ -225,25 +258,54 @@ func (tx *EvmTx) ParseTransaction(buf []byte) error {
 		if len(dec) != 1 {
 			return errors.New("invalid rlp data for legacy transaction")
 		}
-		txData := dec[0].([]any)
+		txData, err := asList(dec[0])
+		if err != nil {
+			return err
+		}
 		ln := len(txData)
 		if ln != 8 && ln != 11 {
 			return fmt.Errorf("EIP-2930 transaction must have 8 or 11 fields, got %d", ln)
 		}
+		fields := make([][]byte, 7)
+		for i := 0; i < 7; i++ {
+			if fields[i], err = asBytes(txData[i]); err != nil {
+				return err
+			}
+		}
 		tx.Type = EvmTxEIP2930
-		tx.ChainId = rlp.DecodeUint64(txData[0].([]byte))
-		tx.Nonce = rlp.DecodeUint64(txData[1].([]byte))
-		tx.GasFeeCap = new(big.Int).SetBytes(txData[2].([]byte))
-		tx.Gas = rlp.DecodeUint64(txData[3].([]byte))
-		tx.To = "0x" + hex.EncodeToString(txData[4].([]byte))
-		tx.Value = new(big.Int).SetBytes(txData[5].([]byte))
-		tx.Data = txData[6].([]byte)
-		tx.AccessList = txData[7].([]any) // TODO
+		if tx.ChainId, err = decodeUint64Checked(fields[0]); err != nil {
+			return err
+		}
+		if tx.Nonce, err = decodeUint64Checked(fields[1]); err != nil {
+			return err
+		}
+		tx.GasFeeCap = new(big.Int).SetBytes(fields[2])
+		if tx.Gas, err = decodeUint64Checked(fields[3]); err != nil {
+			return err
+		}
+		tx.To = "0x" + hex.EncodeToString(fields[4])
+		tx.Value = new(big.Int).SetBytes(fields[5])
+		tx.Data = fields[6]
+		if tx.AccessList, err = asList(txData[7]); err != nil {
+			return err
+		}
 		if ln == 11 {
 			tx.Signed = true
-			tx.Y = new(big.Int).SetBytes(txData[8].([]byte))
-			tx.R = new(big.Int).SetBytes(txData[9].([]byte))
-			tx.S = new(big.Int).SetBytes(txData[10].([]byte))
+			y, err := asBytes(txData[8])
+			if err != nil {
+				return err
+			}
+			r, err := asBytes(txData[9])
+			if err != nil {
+				return err
+			}
+			s, err := asBytes(txData[10])
+			if err != nil {
+				return err
+			}
+			tx.Y = new(big.Int).SetBytes(y)
+			tx.R = new(big.Int).SetBytes(r)
+			tx.S = new(big.Int).SetBytes(s)
 		} else {
 			tx.Signed = false
 		}
@@ -256,26 +318,55 @@ func (tx *EvmTx) ParseTransaction(buf []byte) error {
 		if len(dec) != 1 {
 			return errors.New("invalid rlp data for legacy transaction")
 		}
-		txData := dec[0].([]any)
+		txData, err := asList(dec[0])
+		if err != nil {
+			return err
+		}
 		ln := len(txData)
 		if ln != 9 && ln != 12 {
 			return fmt.Errorf("EIP-1559 transaction must have 9 or 12 fields, got %d", ln)
 		}
+		fields := make([][]byte, 8)
+		for i := 0; i < 8; i++ {
+			if fields[i], err = asBytes(txData[i]); err != nil {
+				return err
+			}
+		}
 		tx.Type = EvmTxEIP1559
-		tx.ChainId = rlp.DecodeUint64(txData[0].([]byte))
-		tx.Nonce = rlp.DecodeUint64(txData[1].([]byte))
-		tx.GasTipCap = new(big.Int).SetBytes(txData[2].([]byte))
-		tx.GasFeeCap = new(big.Int).SetBytes(txData[3].([]byte))
-		tx.Gas = rlp.DecodeUint64(txData[4].([]byte))
-		tx.To = "0x" + hex.EncodeToString(txData[5].([]byte))
-		tx.Value = new(big.Int).SetBytes(txData[6].([]byte))
-		tx.Data = txData[7].([]byte)
-		tx.AccessList = txData[8].([]any) // TODO
+		if tx.ChainId, err = decodeUint64Checked(fields[0]); err != nil {
+			return err
+		}
+		if tx.Nonce, err = decodeUint64Checked(fields[1]); err != nil {
+			return err
+		}
+		tx.GasTipCap = new(big.Int).SetBytes(fields[2])
+		tx.GasFeeCap = new(big.Int).SetBytes(fields[3])
+		if tx.Gas, err = decodeUint64Checked(fields[4]); err != nil {
+			return err
+		}
+		tx.To = "0x" + hex.EncodeToString(fields[5])
+		tx.Value = new(big.Int).SetBytes(fields[6])
+		tx.Data = fields[7]
+		if tx.AccessList, err = asList(txData[8]); err != nil {
+			return err
+		}
 		if ln == 12 {
 			tx.Signed = true
-			tx.Y = new(big.Int).SetBytes(txData[9].([]byte))
-			tx.R = new(big.Int).SetBytes(txData[10].([]byte))
-			tx.S = new(big.Int).SetBytes(txData[11].([]byte))
+			y, err := asBytes(txData[9])
+			if err != nil {
+				return err
+			}
+			r, err := asBytes(txData[10])
+			if err != nil {
+				return err
+			}
+			s, err := asBytes(txData[11])
+			if err != nil {
+				return err
+			}
+			tx.Y = new(big.Int).SetBytes(y)
+			tx.R = new(big.Int).SetBytes(r)
+			tx.S = new(big.Int).SetBytes(s)
 		} else {
 			tx.Signed = false
 		}
@@ -308,8 +399,24 @@ func (tx *EvmTx) Signature() (*secp256k1.Signature, error) {
 			tx.ChainId = v / 2
 			v = bit
 		} else {
+			// pre-EIP-155 legacy tx: v is the recovery id directly.
+			// Standard values are 27/28 (and some implementations may use
+			// the raw 0/1 recovery id). Normalize to a [0,3] recovery code
+			// so we never feed an out-of-range value to secp256k1 (which
+			// would panic).
 			tx.ChainId = 0
+			switch v {
+			case 27, 28:
+				v -= 27
+			case 0, 1:
+				// already a recovery id
+			default:
+				return nil, fmt.Errorf("invalid pre-EIP-155 signature v value: %d", v)
+			}
 		}
+	}
+	if v > 3 {
+		return nil, fmt.Errorf("invalid signature recovery id: %d", v)
 	}
 	return secp256k1.NewSignatureWithRecoveryCode(r, s, byte(v)), nil
 }
@@ -370,7 +477,13 @@ func (tx *EvmTx) SignWithOptions(key crypto.Signer, opts crypto.SignerOpts) erro
 		return err
 	}
 	// find recovery bit
-	sigO.BruteforceRecoveryCode(h, key.Public().(*secp256k1.PublicKey))
+	pub, ok := key.Public().(*secp256k1.PublicKey)
+	if !ok {
+		return fmt.Errorf("signing key public part must be a secp256k1 public key, got %T", key.Public())
+	}
+	if !sigO.BruteforceRecoveryCode(h, pub) {
+		return errors.New("failed to determine signature recovery code")
+	}
 	// apply signature
 	tx.Signed = true
 	var v byte
@@ -501,6 +614,9 @@ func (tx *EvmTx) UnmarshalJSON(b []byte) error {
 		if !ok {
 			return errors.New("invalid value in s")
 		}
+	}
+	if tx.Y != nil && tx.R != nil && tx.S != nil {
+		tx.Signed = true
 	}
 	return nil
 }

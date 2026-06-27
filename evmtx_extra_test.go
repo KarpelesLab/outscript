@@ -174,3 +174,78 @@ func TestEvmTxEIP1559Sign(t *testing.T) {
 		t.Errorf("expected EIP1559 type after round-trip")
 	}
 }
+
+// TestEvmTxPreEIP155NoPanic verifies that a pre-EIP-155 legacy transaction
+// (ChainId == 0, v == 27/28) can be signed and have its sender recovered without
+// panicking in Signature()/SenderAddress()/MarshalJSON().
+func TestEvmTxPreEIP155NoPanic(t *testing.T) {
+	key := secp256k1.PrivKeyFromBytes(must(hex.DecodeString("eb696a065ef48a2192da5b28b694f87544b30fae8327c4510137a922f32c6dcf")))
+
+	// ChainId == 0 => super-legacy / pre-EIP-155, Y becomes 27 or 28
+	tx := &outscript.EvmTx{ChainId: 0, Nonce: 42, GasFeeCap: big.NewInt(30000000000), Gas: 21000, To: "0x2aeb8add8337360e088b7d9ce4e857b9be60f3a7", Value: new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)}
+
+	if err := tx.Sign(key); err != nil {
+		t.Fatalf("Sign failed: %s", err)
+	}
+	v := tx.Y.Uint64()
+	if v != 27 && v != 28 {
+		t.Fatalf("expected pre-EIP-155 v of 27 or 28, got %d", v)
+	}
+
+	// Signature() must not panic and must succeed
+	if _, err := tx.Signature(); err != nil {
+		t.Fatalf("Signature failed: %s", err)
+	}
+
+	sender, err := tx.SenderAddress()
+	if err != nil {
+		t.Fatalf("SenderAddress failed: %s", err)
+	}
+	if sender != "0x2AeB8ADD8337360E088B7D9ce4e857b9BE60f3a7" {
+		t.Errorf("unexpected sender: %s", sender)
+	}
+
+	// MarshalJSON must not panic
+	if _, err := json.Marshal(tx); err != nil {
+		t.Fatalf("MarshalJSON failed: %s", err)
+	}
+}
+
+// TestEvmTxSignatureInvalidLegacyV verifies an out-of-range pre-EIP-155 v value
+// is rejected with an error rather than panicking.
+func TestEvmTxSignatureInvalidLegacyV(t *testing.T) {
+	tx := &outscript.EvmTx{
+		Type:   outscript.EvmTxLegacy,
+		Signed: true,
+		Y:      big.NewInt(30), // invalid: not 27/28 and < 35
+		R:      big.NewInt(1),
+		S:      big.NewInt(1),
+	}
+	if _, err := tx.Signature(); err == nil {
+		t.Fatal("expected error for invalid pre-EIP-155 v value, got nil")
+	}
+}
+
+// TestParseTransactionMalformedNonce verifies a legacy tx with a 9-byte nonce
+// field returns an error instead of panicking in rlp.DecodeUint64.
+func TestParseTransactionMalformedNonce(t *testing.T) {
+	// legacy 6-field list: nonce(9 bytes), gasPrice, gas, to, value, data
+	buf := must(hex.DecodeString("cf89000000000000000001" + "8080808080"))
+	var tx outscript.EvmTx
+	err := tx.ParseTransaction(buf)
+	if err == nil {
+		t.Fatal("expected error for 9-byte nonce field, got nil")
+	}
+}
+
+// TestParseTransactionMalformedTypedTx verifies a typed (EIP-1559) tx with a
+// list where bytes are expected returns an error instead of panicking.
+func TestParseTransactionMalformedTypedTx(t *testing.T) {
+	// 0x02 || rlp([ [], 80, 80, 80, 80, 80, 80, 80, [] ]) -- field0 is a list
+	buf := must(hex.DecodeString("02" + "c9" + "c0" + "80808080808080" + "c0"))
+	var tx outscript.EvmTx
+	err := tx.ParseTransaction(buf)
+	if err == nil {
+		t.Fatal("expected error for typed tx with list where bytes expected, got nil")
+	}
+}
