@@ -52,6 +52,12 @@ func (o *Out) Hash() []byte {
 		return o.raw
 	case "solana":
 		return o.raw
+	case "cardano":
+		// raw is "header byte + credential(s)"; return the payment/stake credential
+		if len(o.raw) >= 29 {
+			return o.raw[1:29]
+		}
+		return nil
 	default:
 		return nil
 	}

@@ -10,6 +10,7 @@ require (
 	github.com/KarpelesLab/rlp v0.1.4
 	github.com/KarpelesLab/secp256k1 v0.2.8
 	github.com/KarpelesLab/typutil v0.2.34
+	github.com/fxamacker/cbor/v2 v2.9.1
 	golang.org/x/crypto v0.49.0
 	lukechampine.com/blake3 v1.4.1
 )
@@ -18,7 +19,6 @@ require (
 	github.com/KarpelesLab/mldsa v0.2.0 // indirect
 	github.com/KarpelesLab/pjson v0.2.0 // indirect
 	github.com/KarpelesLab/slhdsa v0.1.0 // indirect
-	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/sys v0.42.0 // indirect

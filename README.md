@@ -26,6 +26,7 @@ go get github.com/KarpelesLab/outscript
 | EVM (Ethereum, etc.) | EIP-55 checksummed | EvmTx |
 | Massa | AU (user) / AS (smart contract) | - |
 | Solana | Base58 (32 bytes) | SolanaTx |
+| Cardano | Shelley bech32 (addr / addr_test / stake) | CardanoTx |
 
 ## Usage
 
@@ -48,6 +49,17 @@ s := outscript.New(key.Public())
 
 addr, _ = s.Address("solana", "solana")        // base58
 addr, _ = s.Address("massa", "massa")          // AU...
+
+// Cardano (ed25519). Address("cardano") yields a Shelley enterprise address
+// (payment credential only); pass "cardano-testnet" for the testnet form.
+addr, _ = s.Address("cardano")                 // addr1...
+addr, _ = s.Address("cardano", "cardano-testnet") // addr_test1...
+
+// Base (payment+stake) and reward addresses need two key hashes:
+ph := outscript.CardanoKeyHash(paymentPub)
+sh := outscript.CardanoKeyHash(stakePub)
+addr, _ = outscript.CardanoBaseAddress(ph, sh, "cardano")   // addr1...
+addr, _ = outscript.CardanoRewardAddress(sh, "cardano")     // stake1...
 ```
 
 ### Address Parsing
@@ -65,6 +77,10 @@ out, _ := outscript.ParseSolanaAddress("83astBRguLMdt2h5U1Tpdq5tjFoJ...")
 
 // Massa
 out, _ := outscript.ParseMassaAddress("AU16f3K8uWS8cSJaXb7...")
+
+// Cardano (addr / addr_test / stake / stake_test)
+out, _ := outscript.ParseCardanoAddress("addr1vx2fxv2umyhttkxyxp8...")
+raw := out.Bytes() // raw address bytes (header + credentials), for use as a tx output address
 ```
 
 ### Bitcoin Transactions
@@ -185,6 +201,39 @@ data, _ := tx.MarshalBinary()
 // Transaction ID is the first signature
 txid, _ := tx.Hash()
 ```
+
+### Cardano Transactions
+
+Builds Shelley/Conway-era transactions: CBOR-encoded body (inputs, outputs, fee,
+optional TTL), ADA and native-asset outputs, and Ed25519 vkey witnesses. The
+transaction id and signing digest are `blake2b-256` of the transaction body.
+
+```go
+toAddr, _ := outscript.ParseCardanoAddress("addr1vx2fxv2umyhttkxyxp8...")
+
+tx := &outscript.CardanoTx{
+    Inputs: []*outscript.CardanoInput{
+        {TxID: prevTxID /* 32 bytes */, Index: 0},
+    },
+    Outputs: []*outscript.CardanoOutput{
+        {Address: toAddr.Bytes(), Amount: 1_000_000}, // lovelace
+    },
+    Fee: 170_000,
+    TTL: 41_000_000, // optional (slot); 0 omits it
+}
+
+// Sign with one or more Ed25519 keys (appends a vkey witness per key)
+tx.Sign(privKey)
+
+data, _ := tx.MarshalBinary() // CBOR transaction
+txid, _ := tx.Hash()          // blake2b-256 of the body
+```
+
+Native tokens are added via `CardanoOutput.Assets` (`CardanoAsset{PolicyID,
+AssetName, Amount}`). Plutus scripts, certificates, staking actions and metadata
+are out of scope. Cardano HD wallets typically use BIP32-Ed25519 extended keys;
+`Sign` uses standard `crypto/ed25519`, so the signing key must correspond to the
+public key that derived the spent address.
 
 ### Block Rewards
 

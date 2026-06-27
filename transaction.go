@@ -6,6 +6,7 @@ var (
 	_ = Transaction(&EvmTx{})
 	_ = Transaction(&BtcTx{})
 	_ = Transaction(&SolanaTx{})
+	_ = Transaction(&CardanoTx{})
 )
 
 // Transaction is the common interface for cryptocurrency transactions that can be

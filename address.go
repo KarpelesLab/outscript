@@ -353,6 +353,8 @@ func (out *Out) Address(flags ...string) (string, error) {
 	switch out.baseName() {
 	case "solana":
 		return base58.Bitcoin.Encode(out.raw), nil
+	case "cardano":
+		return cardanoAddressFromOut(out.raw, net)
 	case "eth", "evm":
 		return eip55(out.raw), nil
 	case "massa_pubkey":
