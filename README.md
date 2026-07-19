@@ -160,7 +160,36 @@ data, _ := tx.MarshalBinary()
 sender, _ := tx.SenderAddress()
 ```
 
-Supported EVM transaction types: Legacy, EIP-2930, EIP-1559, EIP-4844.
+Supported EVM transaction types: Legacy, EIP-2930, EIP-1559, EIP-4844, EIP-7702.
+
+#### EIP-7702 (set code / authorization list)
+
+```go
+// An authority signs an authorization delegating its code to a contract.
+// A ChainId of 0 makes the authorization valid on any chain.
+auth := &outscript.EvmAuthorization{
+    ChainId: 1,
+    Address: "0x...", // delegation target (implementation contract)
+    Nonce:   0,
+}
+auth.Sign(authorityKey)
+authority, _ := auth.Authority() // recover the signing address
+
+// Bundle one or more authorizations into a type-0x04 transaction.
+tx := &outscript.EvmTx{
+    Type:      outscript.EvmTxEIP7702,
+    ChainId:   1,
+    Nonce:     3,
+    GasTipCap: big.NewInt(1_000_000_000),
+    GasFeeCap: big.NewInt(20_000_000_000),
+    Gas:       100000,
+    To:        "0x...",
+    Value:     big.NewInt(0),
+    AuthList:  []*outscript.EvmAuthorization{auth},
+}
+tx.Sign(senderKey)
+data, _ := tx.MarshalBinary()
+```
 
 ### EVM ABI Encoding
 

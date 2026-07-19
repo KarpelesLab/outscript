@@ -20,12 +20,16 @@ import (
 
 // LegacyTx
 // DynamicFeeTx represents an EIP-1559 transaction
-// AccessListTx is the data of EIP-2930 access list transactions
+// AccessListTx is the data of EIP-2930 access list transactions; access lists
+// (the [address, [storageKeys...]] tuples) are encoded/decoded for EIP-2930,
+// EIP-1559 and EIP-7702 transactions.
 //
 // Legacy = rlp([nonce, gasPrice, gasLimit, to, value, data, v, r, s])
 // EIP-2930 = 0x01 || rlp([chainId, nonce, gasPrice, gasLimit, to, value, data, accessList, signatureYParity, signatureR, signatureS])
 // EIP-1559 = 0x02 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit, destination, amount, data, access_list, signature_y_parity, signature_r, signature_s])
 // EIP-4844 = 0x03 || [chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit, to, value, data, access_list, max_fee_per_blob_gas, blob_versioned_hashes, y_parity, r, s]
+// EIP-7702 = 0x04 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit, destination, value, data, access_list, authorization_list, signature_y_parity, signature_r, signature_s])
+//            where authorization_list = [[chain_id, address, nonce, y_parity, r, s], ...] and each tuple is signed over keccak256(0x05 || rlp([chain_id, address, nonce]))
 // however, EIP-2930 is so rare we can probably forget about it
 
 // EvmTxType represents the type of EVM transaction encoding.
@@ -36,11 +40,12 @@ const (
 	EvmTxEIP2930                  // EIP-2930 access list transaction
 	EvmTxEIP1559                  // EIP-1559 dynamic fee transaction
 	EvmTxEIP4844                  // EIP-4844 blob transaction
+	EvmTxEIP7702                  // EIP-7702 set-code (authorization list) transaction
 )
 
 // EvmTx represents an Ethereum Virtual Machine transaction. It supports legacy,
-// EIP-2930, EIP-1559, and EIP-4844 transaction types, and can be signed, serialized,
-// parsed, and converted to/from JSON.
+// EIP-2930, EIP-1559, EIP-4844, and EIP-7702 transaction types, and can be signed,
+// serialized, parsed, and converted to/from JSON.
 type EvmTx struct {
 	Nonce      uint64
 	GasTipCap  *big.Int // a.k.a. maxPriorityFeePerGas
@@ -49,9 +54,10 @@ type EvmTx struct {
 	To         string
 	Value      *big.Int
 	Data       []byte
-	ChainId    uint64    // in legacy tx, chainId is encoded in v before signature
-	Type       EvmTxType // type of transaction: legacy, eip2930 or eip1559
-	AccessList []any     // TODO
+	ChainId    uint64              // in legacy tx, chainId is encoded in v before signature
+	Type       EvmTxType           // type of transaction: legacy, eip2930 or eip1559
+	AccessList []*EvmAccessTuple   // EIP-2930 access list (EIP-2930, EIP-1559, EIP-7702)
+	AuthList   []*EvmAuthorization // EIP-7702 authorization list (type EvmTxEIP7702)
 	Signed     bool
 	Y, R, S    *big.Int
 }
@@ -72,6 +78,9 @@ type evmTxJson struct {
 	V         string `json:"v"`
 	R         string `json:"r"`
 	S         string `json:"s"`
+
+	AccessList        []*evmAccessTupleJson   `json:"accessList,omitempty"`
+	AuthorizationList []*evmAuthorizationJson `json:"authorizationList,omitempty"`
 }
 
 // RlpFields returns the Rlp fields for the given transaction, less the signature fields
@@ -95,7 +104,7 @@ func (tx *EvmTx) RlpFields() []any {
 			tx.To,
 			tx.Value,
 			tx.Data,
-			[]any{},
+			tx.accessListRlp(),
 		}
 	case EvmTxEIP1559:
 		return []any{
@@ -107,7 +116,20 @@ func (tx *EvmTx) RlpFields() []any {
 			tx.To,
 			tx.Value,
 			tx.Data,
-			[]any{},
+			tx.accessListRlp(),
+		}
+	case EvmTxEIP7702:
+		return []any{
+			tx.ChainId,
+			tx.Nonce,
+			tx.GasTipCap,
+			tx.GasFeeCap,
+			tx.Gas,
+			tx.To,
+			tx.Value,
+			tx.Data,
+			tx.accessListRlp(),
+			tx.authorizationListRlp(),
 		}
 	default:
 		return nil
@@ -124,6 +146,8 @@ func (tx *EvmTx) typeValue() byte {
 		return 2
 	case EvmTxEIP4844:
 		return 3
+	case EvmTxEIP7702:
+		return 4
 	default:
 		return 0xff // :(
 	}
@@ -286,7 +310,7 @@ func (tx *EvmTx) ParseTransaction(buf []byte) error {
 		tx.To = "0x" + hex.EncodeToString(fields[4])
 		tx.Value = new(big.Int).SetBytes(fields[5])
 		tx.Data = fields[6]
-		if tx.AccessList, err = asList(txData[7]); err != nil {
+		if tx.AccessList, err = parseAccessList(txData[7]); err != nil {
 			return err
 		}
 		if ln == 11 {
@@ -347,7 +371,7 @@ func (tx *EvmTx) ParseTransaction(buf []byte) error {
 		tx.To = "0x" + hex.EncodeToString(fields[5])
 		tx.Value = new(big.Int).SetBytes(fields[6])
 		tx.Data = fields[7]
-		if tx.AccessList, err = asList(txData[8]); err != nil {
+		if tx.AccessList, err = parseAccessList(txData[8]); err != nil {
 			return err
 		}
 		if ln == 12 {
@@ -361,6 +385,70 @@ func (tx *EvmTx) ParseTransaction(buf []byte) error {
 				return err
 			}
 			s, err := asBytes(txData[11])
+			if err != nil {
+				return err
+			}
+			tx.Y = new(big.Int).SetBytes(y)
+			tx.R = new(big.Int).SetBytes(r)
+			tx.S = new(big.Int).SetBytes(s)
+		} else {
+			tx.Signed = false
+		}
+		return nil
+	case 4: // EvmTxEIP7702
+		dec, err := rlp.Decode(buf[1:])
+		if err != nil {
+			return err
+		}
+		if len(dec) != 1 {
+			return errors.New("invalid rlp data for EIP-7702 transaction")
+		}
+		txData, err := asList(dec[0])
+		if err != nil {
+			return err
+		}
+		ln := len(txData)
+		if ln != 10 && ln != 13 {
+			return fmt.Errorf("EIP-7702 transaction must have 10 or 13 fields, got %d", ln)
+		}
+		fields := make([][]byte, 8)
+		for i := 0; i < 8; i++ {
+			if fields[i], err = asBytes(txData[i]); err != nil {
+				return err
+			}
+		}
+		tx.Type = EvmTxEIP7702
+		if tx.ChainId, err = decodeUint64Checked(fields[0]); err != nil {
+			return err
+		}
+		if tx.Nonce, err = decodeUint64Checked(fields[1]); err != nil {
+			return err
+		}
+		tx.GasTipCap = new(big.Int).SetBytes(fields[2])
+		tx.GasFeeCap = new(big.Int).SetBytes(fields[3])
+		if tx.Gas, err = decodeUint64Checked(fields[4]); err != nil {
+			return err
+		}
+		tx.To = "0x" + hex.EncodeToString(fields[5])
+		tx.Value = new(big.Int).SetBytes(fields[6])
+		tx.Data = fields[7]
+		if tx.AccessList, err = parseAccessList(txData[8]); err != nil {
+			return err
+		}
+		if tx.AuthList, err = parseAuthorizationList(txData[9]); err != nil {
+			return err
+		}
+		if ln == 13 {
+			tx.Signed = true
+			y, err := asBytes(txData[10])
+			if err != nil {
+				return err
+			}
+			r, err := asBytes(txData[11])
+			if err != nil {
+				return err
+			}
+			s, err := asBytes(txData[12])
 			if err != nil {
 				return err
 			}
@@ -529,6 +617,20 @@ func (tx *EvmTx) MarshalJSON() ([]byte, error) {
 		obj.GasTipCap = "0x" + tx.GasTipCap.Text(16)
 	}
 
+	if len(tx.AccessList) > 0 {
+		obj.AccessList = make([]*evmAccessTupleJson, len(tx.AccessList))
+		for i, t := range tx.AccessList {
+			obj.AccessList[i] = t.toJson()
+		}
+	}
+
+	if len(tx.AuthList) > 0 {
+		obj.AuthorizationList = make([]*evmAuthorizationJson, len(tx.AuthList))
+		for i, a := range tx.AuthList {
+			obj.AuthorizationList[i] = a.toJson()
+		}
+	}
+
 	if tx.Signed {
 		obj.From, _ = tx.SenderAddress()
 		obj.V = "0x" + tx.Y.Text(16)
@@ -614,6 +716,21 @@ func (tx *EvmTx) UnmarshalJSON(b []byte) error {
 		if !ok {
 			return errors.New("invalid value in s")
 		}
+	}
+	if len(obj.AccessList) > 0 {
+		tx.AccessList = make([]*EvmAccessTuple, len(obj.AccessList))
+		for i, ja := range obj.AccessList {
+			tx.AccessList[i] = ja.toAccessTuple()
+		}
+	}
+	if len(obj.AuthorizationList) > 0 {
+		tx.AuthList = make([]*EvmAuthorization, len(obj.AuthorizationList))
+		for i, ja := range obj.AuthorizationList {
+			if tx.AuthList[i], err = ja.toAuthorization(); err != nil {
+				return err
+			}
+		}
+		tx.Type = EvmTxEIP7702
 	}
 	if tx.Y != nil && tx.R != nil && tx.S != nil {
 		tx.Signed = true
