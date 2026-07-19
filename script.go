@@ -3,10 +3,10 @@
 // It supports Bitcoin and Bitcoin-like cryptocurrency output script formats (P2PKH, P2SH, P2WPKH,
 // P2WSH, P2PK, P2TR, etc.), EVM-based networks (Ethereum and compatible chains), and other
 // blockchains such as Litecoin, Dogecoin, Namecoin, Monacoin, Electraproto, Dash, Bitcoin Cash,
-// Massa, Solana, and Cardano.
+// Tron, Massa, Solana, and Cardano.
 //
 // The package also provides transaction building and signing for Bitcoin-style (with segwit
-// witness data), EVM, Solana, and Cardano transactions, as well as block reward calculations
+// witness data), EVM, Tron, Solana, and Cardano transactions, as well as block reward calculations
 // for various cryptocurrency networks.
 package outscript
 

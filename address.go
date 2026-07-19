@@ -366,6 +366,8 @@ func (out *Out) Address(flags ...string) (string, error) {
 		return cardanoAddressFromOut(out.raw, net)
 	case "eth", "evm":
 		return eip55(out.raw), nil
+	case "tron":
+		return EncodeTronAddress(out.raw), nil
 	case "massa_pubkey":
 		buf := out.raw
 		h := gobottle.Hash(buf, sha256.New, sha256.New)

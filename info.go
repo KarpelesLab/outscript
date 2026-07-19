@@ -48,6 +48,12 @@ func (o *Out) Hash() []byte {
 		return res
 	case "eth":
 		return o.raw
+	case "tron":
+		// raw is 0x41 || 20-byte account hash; return the account hash
+		if len(o.raw) == 21 {
+			return o.raw[1:]
+		}
+		return nil
 	case "massa":
 		return o.raw
 	case "solana":

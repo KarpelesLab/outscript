@@ -24,6 +24,7 @@ go get github.com/KarpelesLab/outscript
 | Dash | p2pkh, p2sh | BtcTx |
 | Electraproto | p2pkh, p2sh, p2wpkh | BtcTx |
 | EVM (Ethereum, etc.) | EIP-55 checksummed | EvmTx |
+| Tron | Base58Check (T...) | TronTx |
 | Massa | AU (user) / AS (smart contract) | - |
 | Solana | Base58 (32 bytes) | SolanaTx |
 | Cardano | Shelley bech32 (addr / addr_test / stake) | CardanoTx |
@@ -71,6 +72,10 @@ out, _ = outscript.ParseBitcoinBasedAddress("auto", "1A1zP1...")  // auto-detect
 
 // EVM
 out, _ := outscript.ParseEvmAddress("0x2AeB8ADD...")
+
+// Tron (T... Base58Check)
+out, _ := outscript.ParseTronAddress("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
+raw, _ := outscript.DecodeTronAddress("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t") // 21-byte 0x41... form
 
 // Solana
 out, _ := outscript.ParseSolanaAddress("83astBRguLMdt2h5U1Tpdq5tjFoJ...")
@@ -206,6 +211,38 @@ Or use `AbiBuffer` directly for more control:
 buf := outscript.NewAbiBuffer(nil)
 buf.EncodeAbi("balanceOf(address)", addr)
 calldata := buf.Call("balanceOf(address)")
+```
+
+### Tron Transactions
+
+Tron transactions are protobuf-encoded and signed with secp256k1 (65-byte
+recoverable signatures). The reference-block fields, expiration and timestamp
+come from a recent block on the network.
+
+```go
+// native TRX transfer (amounts are in sun; 1 TRX = 1_000_000 sun)
+tx := &outscript.TronTx{
+    RefBlockBytes: refBlockBytes, // bytes [6:8] of the ref block height
+    RefBlockHash:  refBlockHash,  // bytes [8:16] of the ref block id
+    Expiration:    expiration,    // ms since epoch
+    Timestamp:     timestamp,     // ms since epoch
+}
+tx.AddTransfer("TSender...", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", 1_000_000)
+
+// or a TRC20 token transfer (e.g. USDT); amount is in the token's base units
+tx.FeeLimit = 100_000_000
+tx.AddTRC20Transfer("TSender...", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "TRecipient...", big.NewInt(1_000_000))
+
+// or any smart-contract call with raw calldata. Note: EvmCall encodes address
+// params as 20 bytes, so strip the 0x41 Tron prefix with DecodeTronAddress(...)[1:]
+raw, _ := outscript.DecodeTronAddress("TRecipient...")
+data, _ := outscript.EvmCall("transfer(address,uint256)", raw[1:], big.NewInt(1_000_000))
+tx.AddTriggerSmartContract("TSender...", "TContract...", 0, data)
+
+tx.Sign(privKey)
+raw, _ := tx.MarshalBinary() // broadcast this
+
+signers, _ := tx.SignerAddresses() // recover the signing address(es)
 ```
 
 ### Solana Transactions

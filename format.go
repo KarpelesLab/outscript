@@ -33,6 +33,9 @@ var (
 		"p2wsh:p2wpkh": Format{Bytes{0}, IPushBytes{IHash(Lookup("p2wpkh"), sha256.New)}},
 		// ethereum format
 		"eth": Format{IHash(Lookup("pubkey:uncomp"), newEtherHash)},
+		// tron: same 20-byte keccak account hash as eth, prefixed with the 0x41
+		// mainnet version byte. Out.Address Base58Check-encodes it to a "T..." string.
+		"tron": Format{Bytes{tronAddressPrefix}, IHash(Lookup("pubkey:uncomp"), newEtherHash)},
 		// massa keys are blake3 encoded
 		"massa_pubkey": Format{Bytes{0}, Lookup("pubkey:ed25519")},
 		"massa":        Format{Bytes{0, 0}, IHash(Lookup("massa_pubkey"), newMassaHash)}, // 0[type=address, 1 for smart contract], version=0
@@ -50,6 +53,7 @@ var (
 		"litecoin":     []string{"p2wpkh", "p2sh:p2wpkh", "p2puk", "p2pk", "p2pukh", "p2pkh"},
 		"dogecoin":     []string{"p2puk", "p2pk", "p2pukh", "p2pkh"},
 		"evm":          []string{"eth"},
+		"tron":         []string{"tron"},
 		"massa":        []string{"massa"},
 		"solana":       []string{"solana"},
 		"cardano":      []string{"cardano"},
